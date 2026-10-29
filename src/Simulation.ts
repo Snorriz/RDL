@@ -1,6 +1,19 @@
 import * as THREE from 'three';
 import { DQNAgent } from './ReinforcementLearning';
 
+export interface SimStats {
+  episode: number;
+  epsilon: number;
+  avgReward: number;
+  lastReward: number;
+  distance: number;
+  memorySize: number;
+  step: number;
+  catchCount: number;
+  ballSpeed: number;
+  lastAction: number;
+}
+
 export class Simulation {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
@@ -31,20 +44,34 @@ export class Simulation {
   ambientParticlePositions: Float32Array;
   rewardFlash: number;
   container: HTMLElement;
-  bloomComposer: any;
   ringEffect: THREE.Mesh;
   ringScale: number;
   ringOpacity: number;
   connectionLine: THREE.Line;
   time: number;
-  prevDistance: number;
   catchCount: number;
+
+  // Physics constants
+  readonly FRICTION = 0.985;        // velocity damping per step
+  readonly IMPULSE_STRENGTH = 0.35;  // push magnitude
+  readonly MAX_VELOCITY = 2.5;       // velocity cap
+  readonly WALL_RESTITUTION = 0.6;   // bounce energy retention
+  readonly BALL_RADIUS = 0.45;
+  readonly BALL_START_X = 0;
+  readonly BALL_START_Z = 0;
+
+  // Visual indicators
+  impulseArrow: THREE.ArrowHelper | null;
+  impulseArrowTimer: number;
+  velocityArrow: THREE.ArrowHelper | null;
 
   constructor(container: HTMLElement) {
     this.container = container;
     this.time = 0;
     this.catchCount = 0;
-    this.prevDistance = 0;
+    this.impulseArrow = null;
+    this.impulseArrowTimer = 0;
+    this.velocityArrow = null;
 
     // Scene
     this.scene = new THREE.Scene();
@@ -59,7 +86,7 @@ export class Simulation {
     this.camera.position.set(0, 22, 20);
     this.camera.lookAt(0, 0, 0);
 
-    // Renderer with high quality
+    // Renderer
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: true,
@@ -242,14 +269,13 @@ export class Simulation {
       pillar.position.set(x, 1.5, z);
       this.scene.add(pillar);
       
-      // Pillar light
       const pLight = new THREE.PointLight(0x4444ff, 0.5, 5);
       pLight.position.set(x, 3, z);
       this.scene.add(pLight);
     });
 
     // Ball (Agent) - inner sphere
-    const ballGeo = new THREE.SphereGeometry(0.45, 64, 64);
+    const ballGeo = new THREE.SphereGeometry(this.BALL_RADIUS, 64, 64);
     const ballMat = new THREE.MeshStandardMaterial({
       color: 0x00ff88,
       roughness: 0.1,
@@ -258,7 +284,7 @@ export class Simulation {
       emissiveIntensity: 0.8,
     });
     this.ball = new THREE.Mesh(ballGeo, ballMat);
-    this.ball.position.set(0, 0.6, 0);
+    this.ball.position.set(this.BALL_START_X, this.BALL_RADIUS + 0.1, this.BALL_START_Z);
     this.ball.castShadow = true;
     this.scene.add(this.ball);
 
@@ -288,7 +314,7 @@ export class Simulation {
       emissiveIntensity: 0.6,
     });
     this.cube = new THREE.Mesh(cubeGeo, cubeMat);
-    this.cube.position.set(5, 0.6, 5);
+    this.cube.position.set(6, 0.6, 6);
     this.cube.castShadow = true;
     this.scene.add(this.cube);
 
@@ -329,12 +355,12 @@ export class Simulation {
     this.scene.add(this.connectionLine);
 
     // Trail particles
-    const trailCount = 200;
+    const trailCount = 300;
     this.trailPositions = new Float32Array(trailCount * 3);
     this.trailColors = new Float32Array(trailCount * 3);
     this.trailIndex = 0;
     for (let i = 0; i < trailCount; i++) {
-      this.trailPositions[i * 3 + 1] = -10; // hide below
+      this.trailPositions[i * 3 + 1] = -10;
       this.trailColors[i * 3] = 0;
       this.trailColors[i * 3 + 1] = 1;
       this.trailColors[i * 3 + 2] = 0.5;
@@ -397,10 +423,11 @@ export class Simulation {
     this.ambientParticles = new THREE.Points(ambientGeo, ambientMat);
     this.scene.add(this.ambientParticles);
 
-    // Agent
-    this.agent = new DQNAgent(6, 8, [128, 64]);
+    // Agent: state = [ballX, ballZ, ballVx, ballVz, targetX, targetZ, distToTarget, speed]
+    // Actions: 0=no push, 1-8=push in 8 directions
+    this.agent = new DQNAgent(8, 9, [64, 32]);
     this.ballVelocity = new THREE.Vector3(0, 0, 0);
-    this.maxSteps = 200;
+    this.maxSteps = 300;
     this.currentStep = 0;
     this.isRunning = false;
     this.speed = 1;
@@ -418,13 +445,17 @@ export class Simulation {
   }
 
   getState(): number[] {
+    const dist = this.getDistance();
+    const speed = Math.sqrt(this.ballVelocity.x ** 2 + this.ballVelocity.z ** 2);
     return [
       this.ball.position.x / this.arenaSize,
       this.ball.position.z / this.arenaSize,
+      this.ballVelocity.x / this.MAX_VELOCITY,
+      this.ballVelocity.z / this.MAX_VELOCITY,
       this.cube.position.x / this.arenaSize,
       this.cube.position.z / this.arenaSize,
-      this.ballVelocity.x,
-      this.ballVelocity.z,
+      dist / (this.arenaSize * 1.414),
+      speed / this.MAX_VELOCITY,
     ];
   }
 
@@ -432,6 +463,81 @@ export class Simulation {
     const dx = this.ball.position.x - this.cube.position.x;
     const dz = this.ball.position.z - this.cube.position.z;
     return Math.sqrt(dx * dx + dz * dz);
+  }
+
+  applyImpulse(action: number) {
+    if (action === 0) return; // No push
+
+    // 8 directions: 1=N, 2=NE, 3=E, 4=SE, 5=S, 6=SW, 7=W, 8=NW
+    const angle = ((action - 1) / 8) * Math.PI * 2;
+    const impulseX = Math.cos(angle) * this.IMPULSE_STRENGTH;
+    const impulseZ = Math.sin(angle) * this.IMPULSE_STRENGTH;
+
+    // Apply impulse to velocity
+    this.ballVelocity.x += impulseX;
+    this.ballVelocity.z += impulseZ;
+
+    // Cap velocity
+    const speed = Math.sqrt(this.ballVelocity.x ** 2 + this.ballVelocity.z ** 2);
+    if (speed > this.MAX_VELOCITY) {
+      this.ballVelocity.x = (this.ballVelocity.x / speed) * this.MAX_VELOCITY;
+      this.ballVelocity.z = (this.ballVelocity.z / speed) * this.MAX_VELOCITY;
+    }
+
+    // Show impulse arrow visually
+    this.showImpulseArrow(impulseX, impulseZ);
+  }
+
+  showImpulseArrow(dx: number, dz: number) {
+    if (this.impulseArrow) {
+      this.scene.remove(this.impulseArrow);
+    }
+    const dir = new THREE.Vector3(dx, 0, dz).normalize();
+    const length = 2.0;
+    this.impulseArrow = new THREE.ArrowHelper(dir, new THREE.Vector3(this.ball.position.x, 0.5, this.ball.position.z), length, 0xffff00, 0.4, 0.3);
+    this.scene.add(this.impulseArrow);
+    this.impulseArrowTimer = 15; // frames to show
+  }
+
+  updatePhysics() {
+    // Apply friction
+    this.ballVelocity.x *= this.FRICTION;
+    this.ballVelocity.z *= this.FRICTION;
+
+    // Stop very slow velocities
+    if (Math.abs(this.ballVelocity.x) < 0.001) this.ballVelocity.x = 0;
+    if (Math.abs(this.ballVelocity.z) < 0.001) this.ballVelocity.z = 0;
+
+    // Update position
+    this.ball.position.x += this.ballVelocity.x;
+    this.ball.position.z += this.ballVelocity.z;
+
+    // Wall collisions with bounce
+    const limit = this.arenaSize - this.BALL_RADIUS;
+    
+    if (this.ball.position.x > limit) {
+      this.ball.position.x = limit;
+      this.ballVelocity.x = -this.ballVelocity.x * this.WALL_RESTITUTION;
+    } else if (this.ball.position.x < -limit) {
+      this.ball.position.x = -limit;
+      this.ballVelocity.x = -this.ballVelocity.x * this.WALL_RESTITUTION;
+    }
+
+    if (this.ball.position.z > limit) {
+      this.ball.position.z = limit;
+      this.ballVelocity.z = -this.ballVelocity.z * this.WALL_RESTITUTION;
+    } else if (this.ball.position.z < -limit) {
+      this.ball.position.z = -limit;
+      this.ballVelocity.z = -this.ballVelocity.z * this.WALL_RESTITUTION;
+    }
+
+    // Ball rotation based on velocity (visual rolling effect)
+    const speed = Math.sqrt(this.ballVelocity.x ** 2 + this.ballVelocity.z ** 2);
+    if (speed > 0.001) {
+      const rotationAxis = new THREE.Vector3(-this.ballVelocity.z, 0, this.ballVelocity.x).normalize();
+      const rotationAngle = speed / this.BALL_RADIUS;
+      this.ball.rotateOnWorldAxis(rotationAxis, rotationAngle);
+    }
   }
 
   moveCube() {
@@ -442,7 +548,7 @@ export class Simulation {
     do {
       newX = (Math.random() - 0.5) * this.arenaSize * 1.6;
       newZ = (Math.random() - 0.5) * this.arenaSize * 1.6;
-    } while (Math.sqrt((newX - this.ball.position.x) ** 2 + (newZ - this.ball.position.z) ** 2) < 4);
+    } while (Math.sqrt((newX - this.BALL_START_X) ** 2 + (newZ - this.BALL_START_Z) ** 2) < 5);
     
     this.cube.position.x = newX;
     this.cube.position.z = newZ;
@@ -466,11 +572,11 @@ export class Simulation {
       this.particlePositions[i * 3 + 1] = y + 0.5;
       this.particlePositions[i * 3 + 2] = z;
       const angle = Math.random() * Math.PI * 2;
-      const speed = Math.random() * 0.2 + 0.05;
+      const spd = Math.random() * 0.2 + 0.05;
       this.particleVelocities[i] = [
-        Math.cos(angle) * speed,
+        Math.cos(angle) * spd,
         Math.random() * 0.15 + 0.05,
-        Math.sin(angle) * speed,
+        Math.sin(angle) * spd,
       ];
       this.particleLifetimes[i] = 1.0;
     }
@@ -498,8 +604,17 @@ export class Simulation {
     this.trailPositions[idx * 3] = this.ball.position.x;
     this.trailPositions[idx * 3 + 1] = 0.15;
     this.trailPositions[idx * 3 + 2] = this.ball.position.z;
+    
+    // Color based on speed
+    const speed = Math.sqrt(this.ballVelocity.x ** 2 + this.ballVelocity.z ** 2);
+    const t = Math.min(speed / this.MAX_VELOCITY, 1);
+    this.trailColors[idx * 3] = t;           // R: more red at high speed
+    this.trailColors[idx * 3 + 1] = 1 - t * 0.5; // G
+    this.trailColors[idx * 3 + 2] = 0.5 * (1 - t); // B
+    
     this.trailIndex++;
     this.trail.geometry.attributes.position.needsUpdate = true;
+    this.trail.geometry.attributes.color.needsUpdate = true;
   }
 
   updateAmbientParticles() {
@@ -515,41 +630,49 @@ export class Simulation {
     const action = this.agent.act(state);
     const prevDist = this.getDistance();
 
-    // Convert action to direction (8 directions)
-    const angle = (action / 8) * Math.PI * 2;
-    const moveSpeed = 0.18;
-    this.ballVelocity.x = Math.cos(angle) * moveSpeed;
-    this.ballVelocity.z = Math.sin(angle) * moveSpeed;
+    // Apply impulse (push) - this is the agent's action
+    this.applyImpulse(action);
 
-    // Move ball
-    this.ball.position.x += this.ballVelocity.x;
-    this.ball.position.z += this.ballVelocity.z;
-
-    // Clamp to arena
-    this.ball.position.x = Math.max(-this.arenaSize + 0.5, Math.min(this.arenaSize - 0.5, this.ball.position.x));
-    this.ball.position.z = Math.max(-this.arenaSize + 0.5, Math.min(this.arenaSize - 0.5, this.ball.position.z));
+    // Run physics simulation
+    this.updatePhysics();
 
     // Calculate reward
     const newDist = this.getDistance();
     let reward = 0;
     let done = false;
 
-    reward += (prevDist - newDist) * 10;
+    // Reward for getting closer to target
+    reward += (prevDist - newDist) * 15;
 
+    // Big reward for catching target
     if (newDist < 1.2) {
       reward += 100;
       done = true;
       this.moveCube();
     }
 
+    // Small penalty for hitting walls
+    const limit = this.arenaSize - this.BALL_RADIUS;
     if (
-      Math.abs(this.ball.position.x) >= this.arenaSize - 0.5 ||
-      Math.abs(this.ball.position.z) >= this.arenaSize - 0.5
+      Math.abs(this.ball.position.x) >= limit - 0.1 ||
+      Math.abs(this.ball.position.z) >= limit - 0.1
     ) {
-      reward -= 1;
+      reward -= 2;
     }
 
-    reward -= 0.1;
+    // Small time penalty
+    reward -= 0.05;
+
+    // Bonus for maintaining momentum toward target
+    const speed = Math.sqrt(this.ballVelocity.x ** 2 + this.ballVelocity.z ** 2);
+    if (speed > 0.1) {
+      const toTargetX = (this.cube.position.x - this.ball.position.x) / newDist;
+      const toTargetZ = (this.cube.position.z - this.ball.position.z) / newDist;
+      const velDirX = this.ballVelocity.x / speed;
+      const velDirZ = this.ballVelocity.z / speed;
+      const alignment = toTargetX * velDirX + toTargetZ * velDirZ;
+      reward += alignment * 0.5 * speed;
+    }
 
     this.currentStep++;
     if (this.currentStep >= this.maxSteps) {
@@ -565,9 +688,11 @@ export class Simulation {
     if (done) {
       this.agent.endEpisode();
       this.currentStep = 0;
-      this.ball.position.x = (Math.random() - 0.5) * this.arenaSize * 0.8;
-      this.ball.position.z = (Math.random() - 0.5) * this.arenaSize * 0.8;
+      // Reset ball to start position (always same point!)
+      this.ball.position.set(this.BALL_START_X, this.BALL_RADIUS + 0.1, this.BALL_START_Z);
       this.ballVelocity.set(0, 0, 0);
+      // Reset ball rotation
+      this.ball.rotation.set(0, 0, 0);
     }
 
     return reward;
@@ -594,15 +719,20 @@ export class Simulation {
     this.cubeWireframe.rotation.y -= 0.01;
     this.cubeWireframe.rotation.z += 0.005;
 
-    // Animate ball
-    const bScale = 1 + Math.sin(this.time * 4) * 0.05;
-    this.ball.scale.set(bScale, bScale, bScale);
+    // Animate ball glow
+    const bScale = 1 + Math.sin(this.time * 4) * 0.03;
     this.ballOuter.scale.set(
       1 + Math.sin(this.time * 2) * 0.1,
       1 + Math.sin(this.time * 2) * 0.1,
       1 + Math.sin(this.time * 2) * 0.1
     );
     (this.ballOuter.material as THREE.MeshBasicMaterial).opacity = 0.1 + Math.sin(this.time * 3) * 0.05;
+
+    // Ball emissive based on speed
+    const speed = Math.sqrt(this.ballVelocity.x ** 2 + this.ballVelocity.z ** 2);
+    const speedRatio = Math.min(speed / this.MAX_VELOCITY, 1);
+    const ballMat = this.ball.material as THREE.MeshStandardMaterial;
+    ballMat.emissiveIntensity = 0.5 + speedRatio * 1.5;
 
     // Ring effect animation
     if (this.ringOpacity > 0) {
@@ -617,6 +747,15 @@ export class Simulation {
       this.rewardFlash -= 0.02;
       const mat = this.cube.material as THREE.MeshStandardMaterial;
       mat.emissiveIntensity = 0.6 + this.rewardFlash * 3;
+    }
+
+    // Impulse arrow fade
+    if (this.impulseArrowTimer > 0) {
+      this.impulseArrowTimer--;
+      if (this.impulseArrowTimer <= 0 && this.impulseArrow) {
+        this.scene.remove(this.impulseArrow);
+        this.impulseArrow = null;
+      }
     }
 
     // Connection line
@@ -634,8 +773,8 @@ export class Simulation {
     groundUniforms.cubePos.value.set(this.cube.position.x, this.cube.position.z);
 
     // Camera smooth follow
-    const targetCamX = this.ball.position.x * 0.25;
-    const targetCamZ = this.ball.position.z * 0.25 + 20;
+    const targetCamX = this.ball.position.x * 0.2;
+    const targetCamZ = this.ball.position.z * 0.2 + 20;
     this.camera.position.x += (targetCamX - this.camera.position.x) * 0.015;
     this.camera.position.z += (targetCamZ - this.camera.position.z) * 0.015;
     this.camera.position.y = 22 + Math.sin(this.time * 0.5) * 0.5;
@@ -656,6 +795,8 @@ export class Simulation {
         memorySize: this.agent.memory.length,
         step: this.currentStep,
         catchCount: this.catchCount,
+        ballSpeed: speed,
+        lastAction: this.agent.lastAction,
       });
     }
 
@@ -680,13 +821,15 @@ export class Simulation {
   }
 
   reset() {
-    this.agent = new DQNAgent(6, 8, [128, 64]);
-    this.ball.position.set(0, 0.6, 0);
+    this.agent = new DQNAgent(8, 9, [64, 32]);
+    this.ball.position.set(this.BALL_START_X, this.BALL_RADIUS + 0.1, this.BALL_START_Z);
+    this.ball.rotation.set(0, 0, 0);
     this.cube.position.set(
       (Math.random() - 0.5) * this.arenaSize * 1.5,
       0.6,
       (Math.random() - 0.5) * this.arenaSize * 1.5
     );
+    this.ballVelocity.set(0, 0, 0);
     this.currentStep = 0;
     this.catchCount = 0;
     this.trailIndex = 0;
@@ -694,6 +837,10 @@ export class Simulation {
       this.trailPositions[i * 3 + 1] = -10;
     }
     this.trail.geometry.attributes.position.needsUpdate = true;
+    if (this.impulseArrow) {
+      this.scene.remove(this.impulseArrow);
+      this.impulseArrow = null;
+    }
   }
 
   dispose() {
@@ -703,15 +850,4 @@ export class Simulation {
       this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
     }
   }
-}
-
-export interface SimStats {
-  episode: number;
-  epsilon: number;
-  avgReward: number;
-  lastReward: number;
-  distance: number;
-  memorySize: number;
-  step: number;
-  catchCount: number;
 }
