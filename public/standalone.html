@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deep RL Neural Network Simulator</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #060612; font-family: 'Inter', sans-serif; color: #fff; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+    button { cursor: pointer; user-select: none; border: none; outline: none; font-family: inherit; }
+    button:active { transform: scale(0.97); }
+    canvas { display: block; }
+
+    .app { display: flex; flex-direction: column; width: 100%; height: 100vh; }
+
+    /* Header */
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 20px; background: rgba(10,10,31,0.9);
+      backdrop-filter: blur(12px); border-bottom: 1px solid rgba(255,255,255,0.05); z-index: 10;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #6b7280; position: relative; }
+    .status-dot.running { background: #34d399; }
+    .status-dot.running::after {
+      content: ''; position: absolute; inset: -3px; border-radius: 50%;
+      background: #34d399; opacity: 0.4; animation: ping 1.5s infinite;
+    }
+    @keyframes ping { 75%,100% { transform: scale(2); opacity: 0; } }
+    .title { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+    .title span:first-child { background: linear-gradient(90deg, #34d399, #22d3ee, #60a5fa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .title span:last-child { color: rgba(255,255,255,0.5); font-weight: 300; margin-left: 6px; }
+    .version { font-size: 9px; padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.3); border: 1px solid rgba(255,255,255,0.08); font-family: 'JetBrains Mono', monospace; }
+    .badges { display: flex; gap: 6px; }
+    .badge { font-size: 9px; padding: 3px 8px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; }
+    .badge-dqn { background: rgba(16,185,129,0.1); color: #34d399; border: 1px solid rgba(16,185,129,0.2); }
+    .badge-arch { background: rgba(59,130,246,0.1); color: #60a5fa; border: 1px solid rgba(59,130,246,0.2); }
+    .badge-eps { background: rgba(168,85,247,0.1); color: #c084fc; border: 1px solid rgba(168,85,247,0.2); }
+
+    /* Main layout */
+    .main { display: flex; flex: 1; overflow: hidden; }
+    .viewport { flex: 1; position: relative; }
+    #three-container { width: 100%; height: 100%; }
+
+    /* Bottom controls */
+    .bottom-controls {
+      position: absolute; bottom: 20px; left: 20px; right: 20px;
+      display: flex; align-items: flex-end; justify-content: space-between;
+      pointer-events: none;
+    }
+    .btn-group { display: flex; gap: 8px; pointer-events: auto; }
+    .btn {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 20px; border-radius: 12px; font-weight: 600; font-size: 13px;
+      backdrop-filter: blur(12px); transition: all 0.3s;
+    }
+    .btn-start { background: rgba(16,185,129,0.1); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+    .btn-start:hover { background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.5); box-shadow: 0 4px 20px rgba(16,185,129,0.1); }
+    .btn-pause { background: rgba(239,68,68,0.1); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
+    .btn-pause:hover { background: rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.5); box-shadow: 0 4px 20px rgba(239,68,68,0.1); }
+    .btn-reset { background: rgba(245,158,11,0.1); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
+    .btn-reset:hover { background: rgba(245,158,11,0.2); border-color: rgba(245,158,11,0.5); box-shadow: 0 4px 20px rgba(245,158,11,0.1); }
+    .btn-icon { font-size: 16px; }
+
+    .speed-control {
+      display: flex; align-items: center; gap: 6px; pointer-events: auto;
+      background: rgba(10,10,31,0.7); backdrop-filter: blur(12px);
+      border-radius: 12px; padding: 8px 14px; border: 1px solid rgba(255,255,255,0.05);
+    }
+    .speed-label { font-size: 9px; color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 0.1em; margin-right: 4px; }
+    .speed-btn {
+      padding: 4px 10px; border-radius: 8px; font-size: 11px;
+      font-family: 'JetBrains Mono', monospace; transition: all 0.2s;
+      background: transparent; color: rgba(255,255,255,0.25); border: 1px solid transparent;
+    }
+    .speed-btn:hover { color: rgba(255,255,255,0.5); }
+    .speed-btn.active { background: rgba(6,182,212,0.15); color: #22d3ee; border-color: rgba(6,182,212,0.3); box-shadow: 0 2px 8px rgba(6,182,212,0.1); }
+
+    /* Legend */
+    .legend {
+      position: absolute; top: 16px; left: 16px;
+      background: rgba(10,10,31,0.6); backdrop-filter: blur(12px);
+      border-radius: 12px; padding: 12px; border: 1px solid rgba(255,255,255,0.05);
+    }
+    .legend-item { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .legend-item:last-child { margin-bottom: 0; }
+    .legend-ball { width: 12px; height: 12px; border-radius: 50%; background: #34d399; box-shadow: 0 0 10px rgba(52,211,153,0.5); }
+    .legend-cube { width: 12px; height: 12px; border-radius: 2px; background: #f87171; box-shadow: 0 0 10px rgba(248,113,113,0.5); }
+    .legend-text { font-size: 11px; color: rgba(255,255,255,0.6); }
+
+    /* Catch counter */
+    .catch-counter {
+      position: absolute; top: 16px; right: 16px;
+      background: rgba(10,10,31,0.6); backdrop-filter: blur(12px);
+      border-radius: 12px; padding: 10px 16px; border: 1px solid rgba(255,255,255,0.05);
+    }
+    .catch-label { font-size: 9px; color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 0.1em; }
+    .catch-value { font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace; background: linear-gradient(90deg, #fbbf24, #f97316); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+    /* Sidebar */
+    .sidebar {
+      width: 310px; background: rgba(10,10,31,0.8); backdrop-filter: blur(12px);
+      border-left: 1px solid rgba(255,255,255,0.05); overflow-y: auto; display: flex; flex-direction: column;
+    }
+    .sidebar-section { padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    .section-title { font-size: 9px; font-weight: 600; color: rgba(255,255,255,0.25); text-transform: uppercase; letter-spacing: 0.15em; margin-bottom: 12px; }
+    .section-subtitle { font-size: 9px; font-family: 'JetBrains Mono', monospace; }
+
+    /* Stat cards */
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat-card { border-radius: 12px; padding: 10px; border: 1px solid; }
+    .stat-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .stat-icon { font-size: 11px; }
+    .stat-label { font-size: 9px; color: rgba(255,255,255,0.35); }
+    .stat-value { font-size: 17px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+
+    .stat-blue { background: linear-gradient(135deg, rgba(59,130,246,0.1), rgba(59,130,246,0.03)); border-color: rgba(59,130,246,0.1); }
+    .stat-blue .stat-value { color: #60a5fa; }
+    .stat-purple { background: linear-gradient(135deg, rgba(168,85,247,0.1), rgba(168,85,247,0.03)); border-color: rgba(168,85,247,0.1); }
+    .stat-purple .stat-value { color: #c084fc; }
+    .stat-emerald { background: linear-gradient(135deg, rgba(16,185,129,0.1), rgba(16,185,129,0.03)); border-color: rgba(16,185,129,0.1); }
+    .stat-emerald .stat-value { color: #34d399; }
+    .stat-amber { background: linear-gradient(135deg, rgba(245,158,11,0.1), rgba(245,158,11,0.03)); border-color: rgba(245,158,11,0.1); }
+    .stat-amber .stat-value { color: #fbbf24; }
+    .stat-cyan { background: linear-gradient(135deg, rgba(6,182,212,0.1), rgba(6,182,212,0.03)); border-color: rgba(6,182,212,0.1); }
+    .stat-cyan .stat-value { color: #22d3ee; }
+    .stat-orange { background: linear-gradient(135deg, rgba(249,115,22,0.1), rgba(249,115,22,0.03)); border-color: rgba(249,115,22,0.1); }
+    .stat-orange .stat-value { color: #fb923c; }
+
+    /* Charts */
+    .chart-container { border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05); }
+    .chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+
+    /* Network layers */
+    .layer-list { display: flex; flex-direction: column; gap: 6px; }
+    .layer-item {
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(255,255,255,0.02); border-radius: 8px;
+      padding: 8px 10px; border: 1px solid rgba(255,255,255,0.04);
+    }
+    .layer-info { flex: 1; }
+    .layer-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    .layer-name { font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.6); }
+    .layer-size { font-size: 9px; font-family: 'JetBrains Mono', monospace; color: rgba(255,255,255,0.25); }
+    .layer-bar-bg { width: 100%; height: 5px; background: rgba(255,255,255,0.04); border-radius: 3px; overflow: hidden; }
+    .layer-bar { height: 100%; border-radius: 3px; opacity: 0.6; transition: width 0.5s; }
+    .layer-desc { font-size: 8px; color: rgba(255,255,255,0.2); margin-top: 3px; }
+    .hyperparams { display: flex; align-items: center; gap: 6px; font-size: 9px; color: rgba(255,255,255,0.25); margin-top: 10px; }
+    .hp-tag { padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.04); }
+
+    /* About */
+    .about-text { font-size: 11px; color: rgba(255,255,255,0.35); line-height: 1.6; }
+    .about-text .hl-green { color: rgba(52,211,153,0.7); }
+    .about-text .hl-amber { color: rgba(251,191,36,0.7); }
+
+    .sidebar-footer { margin-top: auto; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <div class="status-dot" id="statusDot"></div>
+        <div class="title">
+          <span>Deep RL</span><span>Neural Network</span>
+        </div>
+        <span class="version">standalone</span>
+      </div>
+      <div class="badges">
+        <span class="badge badge-dqn">DQN</span>
+        <span class="badge badge-arch">6→128→64→8</span>
+        <span class="badge badge-eps">ε-greedy</span>
+      </div>
+    </header>
+
+    <div class="main">
+      <!-- 3D Viewport -->
+      <div class="viewport">
+        <div id="three-container"></div>
+
+        <!-- Legend -->
+        <div class="legend">
+          <div class="legend-item"><div class="legend-ball"></div><span class="legend-text">Agent</span></div>
+          <div class="legend-item"><div class="legend-cube"></div><span class="legend-text">Target</span></div>
+        </div>
+
+        <!-- Catch Counter -->
+        <div class="catch-counter">
+          <div class="catch-label">Catches</div>
+          <div class="catch-value" id="catchCount">0</div>
+        </div>
+
+        <!-- Bottom Controls -->
+        <div class="bottom-controls">
+          <div class="btn-group">
+            <button class="btn btn-start" id="toggleBtn" onclick="toggleSim()">
+              <span class="btn-icon" id="toggleIcon">▶</span>
+              <span id="toggleText">Start</span>
+            </button>
+            <button class="btn btn-reset" onclick="resetSim()">
+              <span class="btn-icon">↺</span>
+              Reset
+            </button>
+          </div>
+          <div class="speed-control">
+            <span class="speed-label">Speed</span>
+            <button class="speed-btn active" data-speed="1" onclick="setSpeed(1, this)">1×</button>
+            <button class="speed-btn" data-speed="5" onclick="setSpeed(5, this)">5×</button>
+            <button class="speed-btn" data-speed="10" onclick="setSpeed(10, this)">10×</button>
+            <button class="speed-btn" data-speed="25" onclick="setSpeed(25, this)">25×</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <div class="section-title">Training Metrics</div>
+          <div class="stats-grid">
+            <div class="stat-card stat-blue">
+              <div class="stat-card-header"><span class="stat-icon">🎯</span><span class="stat-label">Episode</span></div>
+              <div class="stat-value" id="statEpisode">0</div>
+            </div>
+            <div class="stat-card stat-purple">
+              <div class="stat-card-header"><span class="stat-icon">🎲</span><span class="stat-label">Epsilon</span></div>
+              <div class="stat-value" id="statEpsilon">1.000</div>
+            </div>
+            <div class="stat-card stat-emerald">
+              <div class="stat-card-header"><span class="stat-icon">📈</span><span class="stat-label">Avg Reward</span></div>
+              <div class="stat-value" id="statAvgReward">0.0</div>
+            </div>
+            <div class="stat-card stat-amber">
+              <div class="stat-card-header"><span class="stat-icon">📏</span><span class="stat-label">Distance</span></div>
+              <div class="stat-value" id="statDistance">0.00</div>
+            </div>
+            <div class="stat-card stat-cyan">
+              <div class="stat-card-header"><span class="stat-icon">🧠</span><span class="stat-label">Memory</span></div>
+              <div class="stat-value" id="statMemory">0</div>
+            </div>
+            <div class="stat-card stat-orange">
+              <div class="stat-card-header"><span class="stat-icon">⏱</span><span class="stat-label">Step</span></div>
+              <div class="stat-value" id="statStep">0/200</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="chart-header">
+            <div class="section-title" style="margin-bottom:0">Reward History</div>
+            <span class="section-subtitle" style="color:rgba(52,211,153,0.5)">last 150 ep.</span>
+          </div>
+          <div class="chart-container">
+            <canvas id="rewardChart" width="560" height="220"></canvas>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="chart-header">
+            <div class="section-title" style="margin-bottom:0">Exploration Rate</div>
+            <span class="section-subtitle" style="color:rgba(192,132,252,0.5)">ε-greedy decay</span>
+          </div>
+          <div class="chart-container">
+            <canvas id="epsilonChart" width="560" height="160"></canvas>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="section-title">Network Architecture</div>
+          <div class="layer-list">
+            <div class="layer-item">
+              <div class="layer-info">
+                <div class="layer-header"><span class="layer-name">Input</span><span class="layer-size">6</span></div>
+                <div class="layer-bar-bg"><div class="layer-bar" style="width:4.7%;background:#34d399"></div></div>
+                <div class="layer-desc">State [pos, target, vel]</div>
+              </div>
+            </div>
+            <div class="layer-item">
+              <div class="layer-info">
+                <div class="layer-header"><span class="layer-name">Hidden 1</span><span class="layer-size">128</span></div>
+                <div class="layer-bar-bg"><div class="layer-bar" style="width:100%;background:#60a5fa"></div></div>
+                <div class="layer-desc">ReLU + Dense</div>
+              </div>
+            </div>
+            <div class="layer-item">
+              <div class="layer-info">
+                <div class="layer-header"><span class="layer-name">Hidden 2</span><span class="layer-size">64</span></div>
+                <div class="layer-bar-bg"><div class="layer-bar" style="width:50%;background:#c084fc"></div></div>
+                <div class="layer-desc">ReLU + Dense</div>
+              </div>
+            </div>
+            <div class="layer-item">
+              <div class="layer-info">
+                <div class="layer-header"><span class="layer-name">Output</span><span class="layer-size">8</span></div>
+                <div class="layer-bar-bg"><div class="layer-bar" style="width:6.3%;background:#fbbf24"></div></div>
+                <div class="layer-desc">Q-values (8 actions)</div>
+              </div>
+            </div>
+          </div>
+          <div class="hyperparams">
+            <span class="hp-tag">Adam</span>
+            <span>lr=0.001</span><span>•</span>
+            <span>γ=0.95</span><span>•</span>
+            <span>batch=32</span>
+          </div>
+        </div>
+
+        <div class="sidebar-section sidebar-footer">
+          <div class="section-title">About</div>
+          <p class="about-text">
+            A <span class="hl-green">Deep Q-Network</span> controls the agent (green sphere)
+            to reach the target (red cube). On contact, the target teleports and the agent receives
+            a <span class="hl-amber">+100 reward</span>. The agent learns through
+            experience replay and ε-greedy exploration with exponential decay.
+          </p>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    // =============================================
+    // NEURAL NETWORK
+    // =============================================
+    class NeuralNetwork {
+      constructor(layers, lr = 0.001) {
+        this.layers = layers;
+        this.lr = lr;
+        this.weights = [];
+        this.biases = [];
+        for (let i = 0; i < layers.length - 1; i++) {
+          const w = [];
+          for (let j = 0; j < layers[i]; j++) {
+            const row = [];
+            for (let k = 0; k < layers[i+1]; k++) {
+              row.push((Math.random() - 0.5) * Math.sqrt(2 / layers[i]));
+            }
+            w.push(row);
+          }
+          this.weights.push(w);
+          this.biases.push(new Array(layers[i+1]).fill(0));
+        }
+      }
+      relu(x) { return Math.max(0, x); }
+      reluDeriv(x) { return x > 0 ? 1 : 0; }
+      forward(input) {
+        const outputs = [input];
+        const preActs = [];
+        let cur = input;
+        for (let l = 0; l < this.weights.length; l++) {
+          const next = [], pre = [];
+          for (let j = 0; j < this.weights[l][0].length; j++) {
+            let s = this.biases[l][j];
+            for (let i = 0; i < cur.length; i++) s += cur[i] * this.weights[l][i][j];
+            pre.push(s);
+            next.push(l < this.weights.length - 1 ? this.relu(s) : s);
+          }
+          outputs.push(next);
+          preActs.push(pre);
+          cur = next;
+        }
+        return { outputs, preActs };
+      }
+      predict(input) {
+        const { outputs } = this.forward(input);
+        return outputs[outputs.length - 1];
+      }
+      train(input, target) {
+        const { outputs, preActs } = this.forward(input);
+        const deltas = [];
+        const outL = outputs.length - 1;
+        const od = [];
+        for (let j = 0; j < outputs[outL].length; j++) od.push(target[j] - outputs[outL][j]);
+        deltas.unshift(od);
+        for (let l = this.weights.length - 2; l >= 0; l--) {
+          const d = [];
+          for (let i = 0; i < this.weights[l][0].length; i++) {
+            let s = 0;
+            for (let j = 0; j < this.weights[l+1][0].length; j++) s += deltas[0][j] * this.weights[l+1][i][j];
+            d.push(s * this.reluDeriv(preActs[l][i]));
+          }
+          deltas.unshift(d);
+        }
+        for (let l = 0; l < this.weights.length; l++) {
+          for (let i = 0; i < this.weights[l].length; i++)
+            for (let j = 0; j < this.weights[l][i].length; j++)
+              this.weights[l][i][j] += this.lr * deltas[l][j] * outputs[l][i];
+          for (let j = 0; j < this.biases[l].length; j++)
+            this.biases[l][j] += this.lr * deltas[l][j];
+        }
+      }
+      clone() {
+        const nn = new NeuralNetwork(this.layers, this.lr);
+        for (let l = 0; l < this.weights.length; l++) {
+          for (let i = 0; i < this.weights[l].length; i++)
+            for (let j = 0; j < this.weights[l][i].length; j++)
+              nn.weights[l][i][j] = this.weights[l][i][j];
+          for (let j = 0; j < this.biases[l].length; j++)
+            nn.biases[l][j] = this.biases[l][j];
+        }
+        return nn;
+      }
+    }
+
+    // =============================================
+    // DQN AGENT
+    // =============================================
+    class DQNAgent {
+      constructor(stateSize, actionSize) {
+        const layers = [stateSize, 128, 64, actionSize];
+        this.network = new NeuralNetwork(layers, 0.001);
+        this.targetNetwork = this.network.clone();
+        this.gamma = 0.95;
+        this.epsilon = 1.0;
+        this.epsilonDecay = 0.995;
+        this.epsilonMin = 0.01;
+        this.memory = [];
+        this.memorySize = 10000;
+        this.batchSize = 32;
+        this.trainStep = 0;
+        this.targetUpdateFreq = 50;
+        this.totalReward = 0;
+        this.episodeCount = 0;
+        this.episodeRewards = [];
+        this.actionSize = actionSize;
+      }
+      act(state) {
+        if (Math.random() < this.epsilon) return Math.floor(Math.random() * this.actionSize);
+        const q = this.network.predict(state);
+        let mi = 0, mv = q[0];
+        for (let i = 1; i < q.length; i++) if (q[i] > mv) { mv = q[i]; mi = i; }
+        return mi;
+      }
+      remember(state, action, reward, nextState, done) {
+        this.memory.push({ state, action, reward, nextState, done });
+        if (this.memory.length > this.memorySize) this.memory.shift();
+        this.totalReward += reward;
+      }
+      replay() {
+        if (this.memory.length < this.batchSize) return;
+        for (let b = 0; b < this.batchSize; b++) {
+          const idx = Math.floor(Math.random() * this.memory.length);
+          const exp = this.memory[idx];
+          const q = this.network.predict(exp.state);
+          let target = exp.reward;
+          if (!exp.done) {
+            const nq = this.targetNetwork.predict(exp.nextState);
+            let mx = nq[0]; for (let i = 1; i < nq.length; i++) if (nq[i] > mx) mx = nq[i];
+            target += this.gamma * mx;
+          }
+          q[exp.action] = target;
+          this.network.train(exp.state, q);
+        }
+        this.trainStep++;
+        if (this.trainStep % this.targetUpdateFreq === 0) this.targetNetwork = this.network.clone();
+      }
+      endEpisode() {
+        this.episodeRewards.push(this.totalReward);
+        this.totalReward = 0;
+        this.episodeCount++;
+        if (this.epsilon > this.epsilonMin) this.epsilon *= this.epsilonDecay;
+      }
+      getAvgReward(n = 20) {
+        if (!this.episodeRewards.length) return 0;
+        const r = this.episodeRewards.slice(-n);
+        return r.reduce((a, b) => a + b, 0) / r.length;
+      }
+    }
+
+    // =============================================
+    // 3D SIMULATION
+    // =============================================
+    let scene, camera, renderer, ball, ballOuter, cube, cubeWireframe, ground;
+    let trail, trailPositions, trailIndex = 0;
+    let particles, particlePositions, particleVelocities, particleLifetimes;
+    let ambientParticles, ambientPositions;
+    let ringEffect, ringScale = 0, ringOpacity = 0;
+    let connectionLine;
+    let agent, ballVelocity, arenaSize = 14;
+    let maxSteps = 200, currentStep = 0;
+    let isRunning = false, speed = 1, time = 0, catchCount = 0, rewardFlash = 0;
+    let animId = null;
+    let rewardHistory = [], epsilonHistory = [];
+    let frameCount = 0;
+
+    function initThree() {
+      const container = document.getElementById('three-container');
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.1, 1000);
+      camera.position.set(0, 22, 20);
+      camera.lookAt(0, 0, 0);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.2;
+      container.appendChild(renderer.domElement);
+
+      // Background
+      const bgGeo = new THREE.SphereGeometry(80, 32, 32);
+      const bgMat = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        uniforms: { cTop: { value: new THREE.Color(0x0a0020) }, cBot: { value: new THREE.Color(0x000510) } },
+        vertexShader: `varying vec3 vWP; void main(){ vWP=(modelMatrix*vec4(position,1.0)).xyz; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+        fragmentShader: `uniform vec3 cTop,cBot; varying vec3 vWP; void main(){ float h=normalize(vWP).y; gl_FragColor=vec4(mix(cBot,cTop,max(h,0.0)),1.0); }`
+      });
+      scene.add(new THREE.Mesh(bgGeo, bgMat));
+
+      // Lights
+      scene.add(new THREE.AmbientLight(0x202040, 0.4));
+      const dl = new THREE.DirectionalLight(0xeeeeff, 0.6);
+      dl.position.set(15, 25, 10); dl.castShadow = true;
+      dl.shadow.mapSize.set(2048, 2048);
+      dl.shadow.camera.left = -20; dl.shadow.camera.right = 20;
+      dl.shadow.camera.top = 20; dl.shadow.camera.bottom = -20;
+      scene.add(dl);
+      const rl = new THREE.DirectionalLight(0x4444ff, 0.3);
+      rl.position.set(-10, 10, -15); scene.add(rl);
+
+      // Ground shader
+      const gMat = new THREE.ShaderMaterial({
+        uniforms: { time: { value: 0 }, arenaSize: { value: arenaSize }, ballPos: { value: new THREE.Vector2() }, cubePos: { value: new THREE.Vector2() } },
+        vertexShader: `varying vec3 vP; void main(){ vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+        fragmentShader: `
+          uniform float time,arenaSize; uniform vec2 ballPos,cubePos; varying vec3 vP;
+          void main(){
+            vec2 p=vP.xz;
+            vec2 g=abs(fract(p/2.0-0.5)-0.5)/(fwidth(p/2.0)*1.5);
+            float line=min(g.x,g.y); float ga=1.0-min(line,1.0);
+            float de=min(min(abs(p.x+arenaSize),abs(p.x-arenaSize)),min(abs(p.y+arenaSize),abs(p.y-arenaSize)));
+            float eg=smoothstep(2.0,0.0,de)*0.6;
+            float bg=smoothstep(5.0,0.0,length(p-ballPos))*0.15;
+            float cg=smoothstep(5.0,0.0,length(p-cubePos))*0.15;
+            vec3 c=vec3(0.02,0.02,0.05)+vec3(0.1,0.15,0.4)*ga*0.4+vec3(0.2,0.1,0.8)*eg+vec3(0.0,1.0,0.5)*bg+vec3(1.0,0.2,0.2)*cg;
+            float f=smoothstep(arenaSize*1.2,arenaSize*0.8,max(abs(p.x),abs(p.y)));
+            gl_FragColor=vec4(c*f,1.0);
+          }`
+      });
+      ground = new THREE.Mesh(new THREE.PlaneGeometry(arenaSize*2.5, arenaSize*2.5), gMat);
+      ground.rotation.x = -Math.PI/2; ground.position.y = -0.01;
+      scene.add(ground);
+
+      // Shadow plane
+      const sp = new THREE.Mesh(new THREE.PlaneGeometry(arenaSize*2.5, arenaSize*2.5), new THREE.ShadowMaterial({ opacity: 0.3 }));
+      sp.rotation.x = -Math.PI/2; sp.receiveShadow = true; scene.add(sp);
+
+      // Border
+      const bp = [new THREE.Vector3(-arenaSize,0,-arenaSize), new THREE.Vector3(arenaSize,0,-arenaSize), new THREE.Vector3(arenaSize,0,arenaSize), new THREE.Vector3(-arenaSize,0,arenaSize), new THREE.Vector3(-arenaSize,0,-arenaSize)];
+      const border = new THREE.Line(new THREE.BufferGeometry().setFromPoints(bp), new THREE.LineBasicMaterial({ color: 0x4444ff }));
+      border.position.y = 0.05; scene.add(border);
+
+      // Corner pillars
+      const pGeo = new THREE.CylinderGeometry(0.08, 0.08, 3, 8);
+      const pMat = new THREE.MeshStandardMaterial({ color: 0x4444ff, emissive: 0x2222ff, emissiveIntensity: 0.5 });
+      [[-arenaSize,-arenaSize],[arenaSize,-arenaSize],[arenaSize,arenaSize],[-arenaSize,arenaSize]].forEach(([x,z]) => {
+        const p = new THREE.Mesh(pGeo, pMat); p.position.set(x, 1.5, z); scene.add(p);
+        const pl = new THREE.PointLight(0x4444ff, 0.5, 5); pl.position.set(x, 3, z); scene.add(pl);
+      });
+
+      // Ball
+      const bMat = new THREE.MeshStandardMaterial({ color: 0x00ff88, roughness: 0.1, metalness: 0.9, emissive: 0x00ff88, emissiveIntensity: 0.8 });
+      ball = new THREE.Mesh(new THREE.SphereGeometry(0.45, 64, 64), bMat);
+      ball.position.set(0, 0.6, 0); ball.castShadow = true; scene.add(ball);
+      ballOuter = new THREE.Mesh(new THREE.SphereGeometry(0.65, 32, 32), new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.15, side: THREE.BackSide }));
+      ball.add(ballOuter);
+      ball.add(new THREE.PointLight(0x00ff88, 3, 8));
+
+      // Cube
+      const cMat = new THREE.MeshStandardMaterial({ color: 0xff3344, roughness: 0.1, metalness: 0.9, emissive: 0xff2233, emissiveIntensity: 0.6 });
+      cube = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), cMat);
+      cube.position.set(5, 0.6, 5); cube.castShadow = true; scene.add(cube);
+      cubeWireframe = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.1, 1.1, 1.1)), new THREE.LineBasicMaterial({ color: 0xff6666, transparent: true, opacity: 0.6 }));
+      cube.add(cubeWireframe);
+      cube.add(new THREE.PointLight(0xff3344, 3, 8));
+
+      // Ring effect
+      ringEffect = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.7, 64), new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0, side: THREE.DoubleSide }));
+      ringEffect.rotation.x = -Math.PI/2; ringEffect.position.y = 0.1; scene.add(ringEffect);
+
+      // Connection line
+      connectionLine = new THREE.Line(
+        new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ color: 0x4488ff, transparent: true, opacity: 0.2 })
+      );
+      connectionLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0,0,0,0], 3));
+      scene.add(connectionLine);
+
+      // Trail
+      const tc = 200;
+      trailPositions = new Float32Array(tc * 3);
+      for (let i = 0; i < tc; i++) trailPositions[i*3+1] = -10;
+      const tGeo = new THREE.BufferGeometry();
+      tGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+      trail = new THREE.Points(tGeo, new THREE.PointsMaterial({ color: 0x00ff88, size: 0.12, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false }));
+      scene.add(trail);
+
+      // Particles
+      const pc = 150;
+      particlePositions = new Float32Array(pc * 3);
+      particleVelocities = []; particleLifetimes = [];
+      for (let i = 0; i < pc; i++) { particlePositions[i*3+1] = -10; particleVelocities.push([0,0,0]); particleLifetimes.push(0); }
+      const pGeo2 = new THREE.BufferGeometry();
+      pGeo2.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+      particles = new THREE.Points(pGeo2, new THREE.PointsMaterial({ color: 0xffaa44, size: 0.18, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+      scene.add(particles);
+
+      // Ambient particles
+      const ac = 300;
+      ambientPositions = new Float32Array(ac * 3);
+      for (let i = 0; i < ac; i++) { ambientPositions[i*3]=(Math.random()-0.5)*40; ambientPositions[i*3+1]=Math.random()*15; ambientPositions[i*3+2]=(Math.random()-0.5)*40; }
+      const aGeo = new THREE.BufferGeometry();
+      aGeo.setAttribute('position', new THREE.BufferAttribute(ambientPositions, 3));
+      ambientParticles = new THREE.Points(aGeo, new THREE.PointsMaterial({ color: 0x6644ff, size: 0.06, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false }));
+      scene.add(ambientParticles);
+
+      // Agent
+      agent = new DQNAgent(6, 8);
+      ballVelocity = new THREE.Vector3();
+
+      // Resize
+      window.addEventListener('resize', () => {
+        camera.aspect = container.clientWidth / container.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(container.clientWidth, container.clientHeight);
+      });
+    }
+
+    function getState() {
+      return [ball.position.x/arenaSize, ball.position.z/arenaSize, cube.position.x/arenaSize, cube.position.z/arenaSize, ballVelocity.x, ballVelocity.z];
+    }
+    function getDist() { const dx=ball.position.x-cube.position.x, dz=ball.position.z-cube.position.z; return Math.sqrt(dx*dx+dz*dz); }
+
+    function moveCube() {
+      const op = cube.position.clone();
+      let nx, nz;
+      do { nx=(Math.random()-0.5)*arenaSize*1.6; nz=(Math.random()-0.5)*arenaSize*1.6; }
+      while (Math.sqrt((nx-ball.position.x)**2+(nz-ball.position.z)**2) < 4);
+      cube.position.x = nx; cube.position.z = nz;
+      spawnParticles(op.x, op.y, op.z);
+      ringEffect.position.x = op.x; ringEffect.position.z = op.z;
+      ringScale = 0.5; ringOpacity = 1.0;
+      rewardFlash = 1.0; catchCount++;
+    }
+
+    function spawnParticles(x, y, z) {
+      for (let i = 0; i < particleVelocities.length; i++) {
+        particlePositions[i*3]=x; particlePositions[i*3+1]=y+0.5; particlePositions[i*3+2]=z;
+        const a=Math.random()*Math.PI*2, s=Math.random()*0.2+0.05;
+        particleVelocities[i]=[Math.cos(a)*s, Math.random()*0.15+0.05, Math.sin(a)*s];
+        particleLifetimes[i]=1.0;
+      }
+    }
+
+    function updateParticles() {
+      for (let i = 0; i < particleVelocities.length; i++) {
+        if (particleLifetimes[i] > 0) {
+          particlePositions[i*3]+=particleVelocities[i][0];
+          particlePositions[i*3+1]+=particleVelocities[i][1];
+          particlePositions[i*3+2]+=particleVelocities[i][2];
+          particleVelocities[i][1]-=0.003;
+          particleLifetimes[i]-=0.015;
+          if (particleLifetimes[i]<=0) particlePositions[i*3+1]=-10;
+        }
+      }
+      particles.geometry.attributes.position.needsUpdate = true;
+    }
+
+    function updateTrail() {
+      const idx = trailIndex % (trailPositions.length/3);
+      trailPositions[idx*3]=ball.position.x; trailPositions[idx*3+1]=0.15; trailPositions[idx*3+2]=ball.position.z;
+      trailIndex++;
+      trail.geometry.attributes.position.needsUpdate = true;
+    }
+
+    function step() {
+      const state = getState();
+      const action = agent.act(state);
+      const prevDist = getDist();
+      const angle = (action/8)*Math.PI*2;
+      const ms = 0.18;
+      ballVelocity.x = Math.cos(angle)*ms; ballVelocity.z = Math.sin(angle)*ms;
+      ball.position.x += ballVelocity.x; ball.position.z += ballVelocity.z;
+      ball.position.x = Math.max(-arenaSize+0.5, Math.min(arenaSize-0.5, ball.position.x));
+      ball.position.z = Math.max(-arenaSize+0.5, Math.min(arenaSize-0.5, ball.position.z));
+      const newDist = getDist();
+      let reward = (prevDist-newDist)*10, done = false;
+      if (newDist < 1.2) { reward += 100; done = true; moveCube(); }
+      if (Math.abs(ball.position.x)>=arenaSize-0.5||Math.abs(ball.position.z)>=arenaSize-0.5) reward -= 1;
+      reward -= 0.1;
+      currentStep++;
+      if (currentStep >= maxSteps) done = true;
+      agent.remember(state, action, reward, getState(), done);
+      agent.replay();
+      updateTrail();
+      if (done) {
+        agent.endEpisode();
+        currentStep = 0;
+        ball.position.x = (Math.random()-0.5)*arenaSize*0.8;
+        ball.position.z = (Math.random()-0.5)*arenaSize*0.8;
+        ballVelocity.set(0,0,0);
+      }
+    }
+
+    function animate() {
+      if (!isRunning) return;
+      time += 0.016;
+      for (let i = 0; i < speed; i++) step();
+
+      updateParticles();
+      // Ambient particles
+      for (let i = 0; i < ambientPositions.length/3; i++) {
+        ambientPositions[i*3+1] += Math.sin(time*0.5+i)*0.002;
+        ambientPositions[i*3] += Math.cos(time*0.3+i*0.7)*0.001;
+      }
+      ambientParticles.geometry.attributes.position.needsUpdate = true;
+
+      // Animate cube
+      cube.rotation.y += 0.025;
+      cube.rotation.x = Math.sin(time*2)*0.15;
+      cube.position.y = 0.6 + Math.sin(time*3)*0.15;
+      cubeWireframe.rotation.y -= 0.01; cubeWireframe.rotation.z += 0.005;
+
+      // Animate ball
+      const bs = 1 + Math.sin(time*4)*0.05;
+      ball.scale.set(bs,bs,bs);
+      const os = 1 + Math.sin(time*2)*0.1;
+      ballOuter.scale.set(os,os,os);
+      ballOuter.material.opacity = 0.1 + Math.sin(time*3)*0.05;
+
+      // Ring
+      if (ringOpacity > 0) { ringScale += 0.15; ringOpacity -= 0.025; ringEffect.scale.set(ringScale,ringScale,1); ringEffect.material.opacity = Math.max(0,ringOpacity); }
+
+      // Flash
+      if (rewardFlash > 0) { rewardFlash -= 0.02; cube.material.emissiveIntensity = 0.6 + rewardFlash*3; }
+
+      // Connection line
+      const cp = connectionLine.geometry.attributes.position;
+      cp.setXYZ(0, ball.position.x, 0.3, ball.position.z);
+      cp.setXYZ(1, cube.position.x, 0.3, cube.position.z);
+      cp.needsUpdate = true;
+      connectionLine.material.opacity = Math.max(0.05, 0.3 - getDist()*0.02);
+
+      // Ground shader
+      const gu = ground.material.uniforms;
+      gu.time.value = time;
+      gu.ballPos.value.set(ball.position.x, ball.position.z);
+      gu.cubePos.value.set(cube.position.x, cube.position.z);
+
+      // Camera
+      camera.position.x += (ball.position.x*0.25 - camera.position.x)*0.015;
+      camera.position.z += (ball.position.z*0.25+20 - camera.position.z)*0.015;
+      camera.position.y = 22 + Math.sin(time*0.5)*0.5;
+      camera.lookAt(ball.position.x*0.1, 0, ball.position.z*0.1);
+
+      renderer.render(scene, camera);
+
+      // Update UI every 5 frames
+      frameCount++;
+      if (frameCount % 5 === 0) updateUI();
+
+      animId = requestAnimationFrame(animate);
+    }
+
+    function updateUI() {
+      document.getElementById('statEpisode').textContent = agent.episodeCount;
+      document.getElementById('statEpsilon').textContent = agent.epsilon.toFixed(3);
+      document.getElementById('statAvgReward').textContent = agent.getAvgReward(20).toFixed(1);
+      document.getElementById('statDistance').textContent = getDist().toFixed(2);
+      document.getElementById('statMemory').textContent = agent.memory.length;
+      document.getElementById('statStep').textContent = currentStep + '/200';
+      document.getElementById('catchCount').textContent = catchCount;
+
+      rewardHistory.push(agent.getAvgReward(20));
+      if (rewardHistory.length > 150) rewardHistory.shift();
+      epsilonHistory.push(agent.epsilon);
+      if (epsilonHistory.length > 150) epsilonHistory.shift();
+
+      drawRewardChart();
+      drawEpsilonChart();
+    }
+
+    function drawRewardChart() {
+      const canvas = document.getElementById('rewardChart');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0,0,w,h);
+      const bg = ctx.createLinearGradient(0,0,0,h);
+      bg.addColorStop(0,'rgba(10,10,30,0.9)'); bg.addColorStop(1,'rgba(5,5,20,0.95)');
+      ctx.fillStyle = bg; ctx.fillRect(0,0,w,h);
+      ctx.strokeStyle = 'rgba(50,50,100,0.3)'; ctx.lineWidth = 1;
+      for (let i=0;i<=4;i++){const y=(h/4)*i;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+      if (rewardHistory.length < 2) return;
+      const mx = Math.max(...rewardHistory,1), mn = Math.min(...rewardHistory,-5), rng = mx-mn||1, p = 10;
+      ctx.beginPath();
+      for (let i=0;i<rewardHistory.length;i++){const x=p+(i/(rewardHistory.length-1))*(w-p*2);const y=h-p-((rewardHistory[i]-mn)/rng)*(h-p*2);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+      ctx.lineTo(w-p,h-p);ctx.lineTo(p,h-p);ctx.closePath();
+      const fg=ctx.createLinearGradient(0,0,0,h);fg.addColorStop(0,'rgba(0,255,136,0.15)');fg.addColorStop(1,'rgba(0,255,136,0.0)');ctx.fillStyle=fg;ctx.fill();
+      ctx.beginPath();ctx.strokeStyle='#00ff88';ctx.lineWidth=2.5;ctx.shadowColor='#00ff88';ctx.shadowBlur=8;
+      for(let i=0;i<rewardHistory.length;i++){const x=p+(i/(rewardHistory.length-1))*(w-p*2);const y=h-p-((rewardHistory[i]-mn)/rng)*(h-p*2);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+      ctx.stroke();ctx.shadowBlur=0;
+      ctx.fillStyle='rgba(255,255,255,0.4)';ctx.font='10px JetBrains Mono,monospace';
+      ctx.fillText(mx.toFixed(1),4,14);ctx.fillText(mn.toFixed(1),4,h-4);
+    }
+
+    function drawEpsilonChart() {
+      const canvas = document.getElementById('epsilonChart');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0,0,w,h);
+      const bg = ctx.createLinearGradient(0,0,0,h);
+      bg.addColorStop(0,'rgba(10,10,30,0.9)'); bg.addColorStop(1,'rgba(5,5,20,0.95)');
+      ctx.fillStyle = bg; ctx.fillRect(0,0,w,h);
+      if (epsilonHistory.length < 2) return;
+      const p = 10;
+      ctx.beginPath();
+      for(let i=0;i<epsilonHistory.length;i++){const x=p+(i/(epsilonHistory.length-1))*(w-p*2);const y=h-p-epsilonHistory[i]*(h-p*2);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+      ctx.lineTo(w-p,h-p);ctx.lineTo(p,h-p);ctx.closePath();
+      const fg=ctx.createLinearGradient(0,0,0,h);fg.addColorStop(0,'rgba(168,85,247,0.2)');fg.addColorStop(1,'rgba(168,85,247,0.0)');ctx.fillStyle=fg;ctx.fill();
+      ctx.beginPath();ctx.strokeStyle='#a855f7';ctx.lineWidth=2;ctx.shadowColor='#a855f7';ctx.shadowBlur=6;
+      for(let i=0;i<epsilonHistory.length;i++){const x=p+(i/(epsilonHistory.length-1))*(w-p*2);const y=h-p-epsilonHistory[i]*(h-p*2);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+      ctx.stroke();ctx.shadowBlur=0;
+      const ce=epsilonHistory[epsilonHistory.length-1];
+      ctx.fillStyle='#a855f7';ctx.font='bold 11px JetBrains Mono,monospace';ctx.fillText('ε = '+ce.toFixed(3),w-80,14);
+    }
+
+    // =============================================
+    // CONTROLS
+    // =============================================
+    function toggleSim() {
+      if (isRunning) {
+        isRunning = false;
+        if (animId) cancelAnimationFrame(animId);
+        document.getElementById('toggleBtn').className = 'btn btn-start';
+        document.getElementById('toggleIcon').textContent = '▶';
+        document.getElementById('toggleText').textContent = 'Start';
+        document.getElementById('statusDot').classList.remove('running');
+      } else {
+        isRunning = true;
+        animate();
+        document.getElementById('toggleBtn').className = 'btn btn-pause';
+        document.getElementById('toggleIcon').textContent = '⏸';
+        document.getElementById('toggleText').textContent = 'Pause';
+        document.getElementById('statusDot').classList.add('running');
+      }
+    }
+
+    function setSpeed(s, el) {
+      speed = s;
+      document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+    function resetSim() {
+      agent = new DQNAgent(6, 8);
+      ball.position.set(0, 0.6, 0);
+      cube.position.set((Math.random()-0.5)*arenaSize*1.5, 0.6, (Math.random()-0.5)*arenaSize*1.5);
+      currentStep = 0; catchCount = 0; trailIndex = 0;
+      for (let i=0;i<trailPositions.length/3;i++) trailPositions[i*3+1]=-10;
+      trail.geometry.attributes.position.needsUpdate = true;
+      rewardHistory = []; epsilonHistory = [];
+      updateUI();
+    }
+
+    // =============================================
+    // INIT
+    // =============================================
+    initThree();
+    updateUI();
+  </script>
+</body>
+</html>
