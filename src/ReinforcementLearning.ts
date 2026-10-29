@@ -1,4 +1,4 @@
-import { NeuralNetwork } from './NeuralNetwork';
+import { NeuralNetwork, ForwardResult } from './NeuralNetwork';
 
 interface Experience {
   state: number[];
@@ -23,18 +23,22 @@ export class DQNAgent {
   totalReward: number;
   episodeCount: number;
   episodeRewards: number[];
+  lastForwardResult: ForwardResult | null;
+  lastState: number[];
+  lastAction: number;
+  lastQValues: number[];
 
   constructor(
     stateSize: number,
     actionSize: number,
-    hiddenLayers: number[] = [64, 64]
+    hiddenLayers: number[] = [64, 32]
   ) {
     const layers = [stateSize, ...hiddenLayers, actionSize];
     this.network = new NeuralNetwork(layers, 0.001);
     this.targetNetwork = this.network.clone();
     this.gamma = 0.95;
     this.epsilon = 1.0;
-    this.epsilonDecay = 0.995;
+    this.epsilonDecay = 0.997;
     this.epsilonMin = 0.01;
     this.memory = [];
     this.memorySize = 10000;
@@ -44,13 +48,26 @@ export class DQNAgent {
     this.totalReward = 0;
     this.episodeCount = 0;
     this.episodeRewards = [];
+    this.lastForwardResult = null;
+    this.lastState = [];
+    this.lastAction = 0;
+    this.lastQValues = [];
   }
 
   act(state: number[]): number {
     if (Math.random() < this.epsilon) {
-      return Math.floor(Math.random() * this.network.layers[this.network.layers.length - 1]);
+      const action = Math.floor(Math.random() * this.network.layers[this.network.layers.length - 1]);
+      this.lastState = state;
+      this.lastAction = action;
+      // Still do forward pass for visualization
+      this.lastForwardResult = this.network.forward(state);
+      this.lastQValues = this.network.predict(state);
+      return action;
     }
     const qValues = this.network.predict(state);
+    this.lastForwardResult = this.network.lastForwardResult;
+    this.lastState = state;
+    this.lastQValues = qValues;
     let maxIdx = 0;
     let maxVal = qValues[0];
     for (let i = 1; i < qValues.length; i++) {
@@ -59,6 +76,7 @@ export class DQNAgent {
         maxIdx = i;
       }
     }
+    this.lastAction = maxIdx;
     return maxIdx;
   }
 

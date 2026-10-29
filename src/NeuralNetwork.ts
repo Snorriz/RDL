@@ -1,16 +1,23 @@
 // Simple Neural Network implementation for Deep Q-Learning
 
+export interface ForwardResult {
+  outputs: number[][];
+  preActivations: number[][];
+}
+
 export class NeuralNetwork {
   layers: number[];
   weights: number[][][];
   biases: number[][];
   learningRate: number;
+  lastForwardResult: ForwardResult | null;
 
   constructor(layers: number[], learningRate: number = 0.001) {
     this.layers = layers;
     this.learningRate = learningRate;
     this.weights = [];
     this.biases = [];
+    this.lastForwardResult = null;
 
     // Initialize weights and biases
     for (let i = 0; i < layers.length - 1; i++) {
@@ -35,7 +42,7 @@ export class NeuralNetwork {
     return x > 0 ? 1 : 0;
   }
 
-  forward(input: number[]): { outputs: number[][]; preActivations: number[][] } {
+  forward(input: number[]): ForwardResult {
     const outputs: number[][] = [input];
     const preActivations: number[][] = [];
 
@@ -61,6 +68,7 @@ export class NeuralNetwork {
       current = next;
     }
 
+    this.lastForwardResult = { outputs, preActivations };
     return { outputs, preActivations };
   }
 

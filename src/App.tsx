@@ -6,6 +6,7 @@ function App() {
   const simRef = useRef<Simulation | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [showNN, setShowNN] = useState(true);
   const [stats, setStats] = useState<SimStats>({
     episode: 0,
     epsilon: 1.0,
@@ -15,11 +16,15 @@ function App() {
     memorySize: 0,
     step: 0,
     catchCount: 0,
+    ballSpeed: 0,
+    lastAction: 0,
   });
   const [rewardHistory, setRewardHistory] = useState<number[]>([]);
   const [epsilonHistory, setEpsilonHistory] = useState<number[]>([]);
   const rewardCanvasRef = useRef<HTMLCanvasElement>(null);
   const epsilonCanvasRef = useRef<HTMLCanvasElement>(null);
+  const nnCanvasRef = useRef<HTMLCanvasElement>(null);
+  const nnAnimRef = useRef<number>(0);
 
   const handleStatsUpdate = useCallback((newStats: SimStats) => {
     setStats(newStats);
@@ -40,6 +45,187 @@ function App() {
     sim.onStatsUpdate = handleStatsUpdate;
     return () => { sim.dispose(); };
   }, [handleStatsUpdate]);
+
+  // Neural Network visualization loop
+  useEffect(() => {
+    if (!showNN) return;
+    const drawNN = () => {
+      const canvas = nnCanvasRef.current;
+      if (!canvas || !simRef.current) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const w = canvas.width;
+      const h = canvas.height;
+      const agent = simRef.current.agent;
+      const network = agent.network;
+
+      ctx.clearRect(0, 0, w, h);
+
+      // Background
+      const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+      bgGrad.addColorStop(0, 'rgba(8, 8, 24, 0.95)');
+      bgGrad.addColorStop(1, 'rgba(4, 4, 16, 0.98)');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Border
+      ctx.strokeStyle = 'rgba(100, 100, 255, 0.2)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0, 0, w, h);
+
+      const layers = network.layers;
+      const numLayers = layers.length;
+      const padding = 35;
+      const layerSpacing = (w - padding * 2) / (numLayers - 1);
+
+      // Calculate node positions
+      const nodePositions: { x: number; y: number }[][] = [];
+      for (let l = 0; l < numLayers; l++) {
+        const layerNodes: { x: number; y: number }[] = [];
+        const n = layers[l];
+        const displayN = Math.min(n, 12); // Show max 12 nodes per layer for clarity
+        const nodeSpacing = (h - padding * 2) / (displayN + 1);
+        for (let i = 0; i < displayN; i++) {
+          layerNodes.push({
+            x: padding + l * layerSpacing,
+            y: padding + (i + 1) * nodeSpacing,
+          });
+        }
+        nodePositions.push(layerNodes);
+      }
+
+      // Get activations
+      const forwardResult = agent.lastForwardResult;
+      const activations = forwardResult ? forwardResult.outputs : null;
+
+      // Draw connections
+      for (let l = 0; l < numLayers - 1; l++) {
+        const fromNodes = nodePositions[l];
+        const toNodes = nodePositions[l + 1];
+        const weights = network.weights[l];
+
+        for (let i = 0; i < fromNodes.length; i++) {
+          for (let j = 0; j < toNodes.length; j++) {
+            const actualI = Math.floor(i * layers[l] / Math.min(layers[l], 12));
+            const actualJ = Math.floor(j * layers[l + 1] / Math.min(layers[l + 1], 12));
+            const weight = weights[actualI]?.[actualJ] || 0;
+
+            const absW = Math.min(Math.abs(weight), 2) / 2;
+            const alpha = 0.05 + absW * 0.4;
+
+            if (weight > 0) {
+              ctx.strokeStyle = `rgba(0, 200, 255, ${alpha})`;
+            } else {
+              ctx.strokeStyle = `rgba(255, 80, 80, ${alpha})`;
+            }
+            ctx.lineWidth = 0.5 + absW * 1.5;
+
+            ctx.beginPath();
+            ctx.moveTo(fromNodes[i].x, fromNodes[i].y);
+            ctx.lineTo(toNodes[j].x, toNodes[j].y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // Draw nodes
+      for (let l = 0; l < numLayers; l++) {
+        const nodes = nodePositions[l];
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i];
+          let activation = 0;
+
+          if (activations && activations[l]) {
+            const actualI = Math.floor(i * layers[l] / Math.min(layers[l], 12));
+            activation = activations[l][actualI] || 0;
+          }
+
+          // Node glow
+          const glowRadius = 12;
+          const glow = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, glowRadius);
+          
+          let nodeColor: string;
+          let glowColor: string;
+          
+          if (l === 0) {
+            // Input layer - green
+            const intensity = Math.min(Math.abs(activation), 1);
+            nodeColor = `rgba(0, ${150 + intensity * 105}, ${100 + intensity * 55}, 0.9)`;
+            glowColor = `rgba(0, 255, 136, ${0.2 + intensity * 0.3})`;
+          } else if (l === numLayers - 1) {
+            // Output layer - amber/orange
+            const qVal = activation;
+            const maxQ = Math.max(...(activations?.[numLayers - 1] || [0]));
+            const isMax = Math.abs(qVal - maxQ) < 0.001;
+            const norm = (qVal + 2) / 4; // normalize roughly to 0-1
+            if (isMax) {
+              nodeColor = `rgba(255, 200, 0, 1)`;
+              glowColor = `rgba(255, 200, 0, 0.6)`;
+            } else {
+              nodeColor = `rgba(${180 + norm * 75}, ${100 + norm * 80}, 0, 0.8)`;
+              glowColor = `rgba(255, 150, 0, ${0.1 + norm * 0.3})`;
+            }
+          } else {
+            // Hidden layers - blue/purple
+            const intensity = Math.min(activation, 2) / 2;
+            nodeColor = `rgba(${80 + intensity * 100}, ${50 + intensity * 100}, ${200 + intensity * 55}, 0.9)`;
+            glowColor = `rgba(100, 100, 255, ${0.1 + intensity * 0.4})`;
+          }
+
+          // Draw glow
+          glow.addColorStop(0, glowColor);
+          glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, glowRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Draw node
+          ctx.fillStyle = nodeColor;
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Node border
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+      }
+
+      // Layer labels
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      const layerLabels = ['Input (8)', 'Hidden (64)', 'Hidden (32)', 'Output (9)'];
+      for (let l = 0; l < numLayers; l++) {
+        ctx.fillText(layerLabels[l] || `L${l}`, padding + l * layerSpacing, h - 8);
+      }
+
+      // Title
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('NEURAL NETWORK', 8, 14);
+
+      // Current action indicator
+      if (agent.lastAction !== undefined) {
+        const actionNames = ['WAIT', 'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+        ctx.fillStyle = agent.lastAction === 0 ? 'rgba(150,150,150,0.7)' : 'rgba(255, 200, 0, 0.9)';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`Action: ${actionNames[agent.lastAction] || '?'}`, w - 8, 14);
+      }
+
+      nnAnimRef.current = requestAnimationFrame(drawNN);
+    };
+
+    drawNN();
+    return () => {
+      if (nnAnimRef.current) cancelAnimationFrame(nnAnimRef.current);
+    };
+  }, [showNN]);
 
   const toggleSimulation = () => {
     if (!simRef.current) return;
@@ -68,13 +254,9 @@ function App() {
     if (!ctx) return;
     const w = canvas.width;
     const h = canvas.height;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.style.width = w / dpr + 'px';
-    canvas.style.height = h / dpr + 'px';
 
     ctx.clearRect(0, 0, w, h);
 
-    // Background gradient
     const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
     bgGrad.addColorStop(0, 'rgba(10, 10, 30, 0.9)');
     bgGrad.addColorStop(1, 'rgba(5, 5, 20, 0.95)');
@@ -198,6 +380,8 @@ function App() {
     ctx.fillText(`ε = ${currentE.toFixed(3)}`, w - 80, 14);
   }, [epsilonHistory]);
 
+  const actionNames = ['WAIT', '↑N', '↗NE', '→E', '↘SE', '↓S', '↙SW', '←W', '↖NW'];
+
   return (
     <div className="w-full h-screen flex flex-col bg-[#060612] text-white overflow-hidden font-sans">
       {/* Top Bar */}
@@ -212,21 +396,21 @@ function App() {
             <span className="bg-gradient-to-r from-emerald-400 via-cyan-400 to-blue-400 bg-clip-text text-transparent">
               Deep RL
             </span>
-            <span className="text-white/60 ml-1.5 font-light">Neural Network</span>
+            <span className="text-white/60 ml-1.5 font-light">Physics Simulator</span>
           </h1>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/40 border border-white/10 font-mono">
-            v2.0
+            v3.0
           </span>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
-            DQN
+            DQN + Physics
           </span>
           <span className="text-[10px] px-2 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-mono">
-            6→128→64→8
+            8→64→32→9
           </span>
-          <span className="text-[10px] px-2 py-1 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-mono">
-            ε-greedy
+          <span className="text-[10px] px-2 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono">
+            Impulse Model
           </span>
         </div>
       </header>
@@ -235,6 +419,18 @@ function App() {
         {/* 3D Viewport */}
         <div className="flex-1 relative">
           <div ref={containerRef} className="w-full h-full" />
+
+          {/* Neural Network Overlay */}
+          {showNN && (
+            <div className="absolute top-4 right-4 w-[320px] h-[200px] rounded-xl overflow-hidden border border-white/10 shadow-2xl shadow-blue-500/5">
+              <canvas
+                ref={nnCanvasRef}
+                width={640}
+                height={400}
+                className="w-full h-full"
+              />
+            </div>
+          )}
 
           {/* Bottom Controls */}
           <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between pointer-events-none">
@@ -256,6 +452,17 @@ function App() {
               >
                 <span className="text-lg">↺</span>
                 Reset
+              </button>
+              <button
+                onClick={() => setShowNN(!showNN)}
+                className={`group flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 backdrop-blur-md ${
+                  showNN
+                    ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30 hover:bg-blue-500/20 shadow-lg shadow-blue-500/5'
+                    : 'bg-white/5 text-white/40 border border-white/10 hover:bg-white/10'
+                }`}
+              >
+                <span className="text-lg">🧠</span>
+                NN View
               </button>
             </div>
 
@@ -281,25 +488,43 @@ function App() {
           <div className="absolute top-4 left-4 bg-[#0a0a1f]/60 backdrop-blur-md rounded-xl p-3 border border-white/5">
             <div className="flex items-center gap-2.5 mb-2">
               <div className="w-3 h-3 rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/50" />
-              <span className="text-xs text-white/70">Agent</span>
+              <span className="text-xs text-white/70">Agent (physics ball)</span>
             </div>
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2.5 mb-2">
               <div className="w-3 h-3 rounded-sm bg-red-400 shadow-lg shadow-red-400/50" />
               <span className="text-xs text-white/70">Target</span>
             </div>
+            <div className="flex items-center gap-2.5">
+              <div className="w-3 h-3 bg-yellow-400 shadow-lg shadow-yellow-400/50" style={{ clipPath: 'polygon(50% 0%, 100% 100%, 0% 100%)' }} />
+              <span className="text-xs text-white/70">Impulse arrow</span>
+            </div>
           </div>
 
-          {/* Catch counter */}
-          <div className="absolute top-4 right-4 bg-[#0a0a1f]/60 backdrop-blur-md rounded-xl px-4 py-2.5 border border-white/5">
-            <div className="text-[10px] text-white/40 uppercase tracking-wider">Catches</div>
-            <div className="text-2xl font-bold font-mono bg-gradient-to-r from-amber-400 to-orange-400 bg-clip-text text-transparent">
-              {stats.catchCount}
+          {/* Catch counter + speed */}
+          <div className="absolute top-4 left-4 mt-[88px] flex gap-2">
+            <div className="bg-[#0a0a1f]/60 backdrop-blur-md rounded-xl px-3 py-2 border border-white/5">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Catches</div>
+              <div className="text-xl font-bold font-mono bg-gradient-to-r from-amber-400 to-orange-400 bg-clip-text text-transparent">
+                {stats.catchCount}
+              </div>
+            </div>
+            <div className="bg-[#0a0a1f]/60 backdrop-blur-md rounded-xl px-3 py-2 border border-white/5">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Speed</div>
+              <div className="text-xl font-bold font-mono text-cyan-400">
+                {stats.ballSpeed.toFixed(2)}
+              </div>
+            </div>
+            <div className="bg-[#0a0a1f]/60 backdrop-blur-md rounded-xl px-3 py-2 border border-white/5">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Action</div>
+              <div className="text-xl font-bold font-mono text-yellow-400">
+                {actionNames[stats.lastAction] || '—'}
+              </div>
             </div>
           </div>
         </div>
 
         {/* Side Panel */}
-        <aside className="w-[320px] bg-[#0a0a1f]/80 backdrop-blur-md border-l border-white/5 overflow-y-auto flex flex-col">
+        <aside className="w-[300px] bg-[#0a0a1f]/80 backdrop-blur-md border-l border-white/5 overflow-y-auto flex flex-col">
           {/* Stats Grid */}
           <div className="p-4 border-b border-white/5">
             <h2 className="text-[10px] font-semibold text-white/30 mb-3 uppercase tracking-widest">
@@ -311,7 +536,7 @@ function App() {
               <StatCard label="Avg Reward" value={stats.avgReward.toFixed(1)} icon="📈" color="emerald" />
               <StatCard label="Distance" value={stats.distance.toFixed(2)} icon="📏" color="amber" />
               <StatCard label="Memory" value={stats.memorySize} icon="🧠" color="cyan" />
-              <StatCard label="Step" value={`${stats.step}/200`} icon="⏱" color="orange" />
+              <StatCard label="Step" value={`${stats.step}/300`} icon="⏱" color="orange" />
             </div>
           </div>
 
@@ -322,14 +547,14 @@ function App() {
                 Reward History
               </h2>
               <span className="text-[10px] font-mono text-emerald-400/60">
-                last 150 episodes
+                last 150 ep.
               </span>
             </div>
             <div className="rounded-xl overflow-hidden border border-white/5">
               <canvas
                 ref={rewardCanvasRef}
                 width={560}
-                height={240}
+                height={200}
                 className="w-full"
               />
             </div>
@@ -342,16 +567,29 @@ function App() {
                 Exploration Rate
               </h2>
               <span className="text-[10px] font-mono text-purple-400/60">
-                ε-greedy decay
+                ε-greedy
               </span>
             </div>
             <div className="rounded-xl overflow-hidden border border-white/5">
               <canvas
                 ref={epsilonCanvasRef}
                 width={560}
-                height={180}
+                height={150}
                 className="w-full"
               />
+            </div>
+          </div>
+
+          {/* Physics Info */}
+          <div className="p-4 border-b border-white/5">
+            <h2 className="text-[10px] font-semibold text-white/30 mb-3 uppercase tracking-widest">
+              Physics Model
+            </h2>
+            <div className="space-y-1.5">
+              <PhysicsParam name="Friction" value="0.985" desc="Velocity damping/step" />
+              <PhysicsParam name="Impulse" value="0.35" desc="Push magnitude" />
+              <PhysicsParam name="Max Vel" value="2.50" desc="Velocity cap" />
+              <PhysicsParam name="Bounce" value="0.60" desc="Wall restitution" />
             </div>
           </div>
 
@@ -361,12 +599,12 @@ function App() {
               Network Architecture
             </h2>
             <div className="space-y-1.5">
-              <LayerBar name="Input" size={6} total={128} desc="State [pos, target, vel]" color="emerald" />
-              <LayerBar name="Hidden 1" size={128} total={128} desc="ReLU + Dense" color="blue" />
-              <LayerBar name="Hidden 2" size={64} total={128} desc="ReLU + Dense" color="purple" />
-              <LayerBar name="Output" size={8} total={128} desc="Q-values (8 actions)" color="amber" />
+              <LayerBar name="Input" size={8} total={64} desc="State [pos, vel, target, dist]" color="emerald" />
+              <LayerBar name="Hidden 1" size={64} total={64} desc="ReLU + Dense" color="blue" />
+              <LayerBar name="Hidden 2" size={32} total={64} desc="ReLU + Dense" color="purple" />
+              <LayerBar name="Output" size={9} total={64} desc="Q-values (9 actions)" color="amber" />
             </div>
-            <div className="mt-3 flex items-center gap-2 text-[10px] text-white/30">
+            <div className="mt-3 flex items-center gap-2 text-[10px] text-white/30 flex-wrap">
               <span className="px-1.5 py-0.5 rounded bg-white/5">Adam</span>
               <span>lr=0.001</span>
               <span>•</span>
@@ -376,16 +614,38 @@ function App() {
             </div>
           </div>
 
+          {/* Actions */}
+          <div className="p-4 border-b border-white/5">
+            <h2 className="text-[10px] font-semibold text-white/30 mb-3 uppercase tracking-widest">
+              Agent Actions
+            </h2>
+            <div className="grid grid-cols-3 gap-1">
+              {actionNames.map((name, i) => (
+                <div
+                  key={i}
+                  className={`text-center py-1.5 rounded text-[10px] font-mono border transition-all ${
+                    stats.lastAction === i
+                      ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40'
+                      : 'bg-white/[0.02] text-white/30 border-white/5'
+                  }`}
+                >
+                  {i}: {name}
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* Info */}
           <div className="p-4 mt-auto">
             <h2 className="text-[10px] font-semibold text-white/30 mb-2 uppercase tracking-widest">
               About
             </h2>
             <p className="text-[11px] text-white/40 leading-relaxed">
-              A <span className="text-emerald-400/70">Deep Q-Network</span> controls the agent (green sphere) 
-              to reach the target (red cube). On contact, the target teleports and the agent receives 
-              a <span className="text-amber-400/70">+100 reward</span>. The agent learns through 
-              experience replay and ε-greedy exploration with exponential decay.
+              The agent (<span className="text-emerald-400/70">green sphere</span>) starts from a fixed position. 
+              Each step it applies an <span className="text-yellow-400/70">impulse</span> (push) to the ball. 
+              Physics then takes over: <span className="text-cyan-400/70">friction</span> slows the ball, 
+              <span className="text-blue-400/70"> walls bounce</span> it. The agent must learn to use 
+              momentum and timing to reach the <span className="text-red-400/70">target</span>.
             </p>
           </div>
         </aside>
@@ -439,6 +699,18 @@ function LayerBar({ name, size, total, desc, color }: { name: string; size: numb
         </div>
         <span className="text-[9px] text-white/25 mt-0.5 block">{desc}</span>
       </div>
+    </div>
+  );
+}
+
+function PhysicsParam({ name, value, desc }: { name: string; value: string; desc: string }) {
+  return (
+    <div className="flex items-center justify-between bg-white/[0.02] rounded-lg px-2.5 py-2 border border-white/5">
+      <div>
+        <span className="text-[11px] font-medium text-white/70">{name}</span>
+        <span className="text-[9px] text-white/25 ml-2">{desc}</span>
+      </div>
+      <span className="text-[11px] font-mono text-cyan-400/70">{value}</span>
     </div>
   );
 }
