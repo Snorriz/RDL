@@ -14,50 +14,43 @@ function App() {
     distance: 0,
     memorySize: 0,
     step: 0,
+    catchCount: 0,
   });
   const [rewardHistory, setRewardHistory] = useState<number[]>([]);
   const [epsilonHistory, setEpsilonHistory] = useState<number[]>([]);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rewardCanvasRef = useRef<HTMLCanvasElement>(null);
+  const epsilonCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const handleStatsUpdate = useCallback((newStats: SimStats) => {
     setStats(newStats);
     setRewardHistory(prev => {
       const updated = [...prev, newStats.avgReward];
-      return updated.slice(-100);
+      return updated.slice(-150);
     });
     setEpsilonHistory(prev => {
       const updated = [...prev, newStats.epsilon];
-      return updated.slice(-100);
+      return updated.slice(-150);
     });
   }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
-
     const sim = new Simulation(containerRef.current);
     simRef.current = sim;
     sim.onStatsUpdate = handleStatsUpdate;
-
-    return () => {
-      sim.dispose();
-    };
+    return () => { sim.dispose(); };
   }, [handleStatsUpdate]);
 
   const toggleSimulation = () => {
     if (!simRef.current) return;
-    if (isRunning) {
-      simRef.current.stop();
-    } else {
-      simRef.current.start();
-    }
+    if (isRunning) simRef.current.stop();
+    else simRef.current.start();
     setIsRunning(!isRunning);
   };
 
   const handleSpeedChange = (newSpeed: number) => {
     setSpeed(newSpeed);
-    if (simRef.current) {
-      simRef.current.setSpeed(newSpeed);
-    }
+    if (simRef.current) simRef.current.setSpeed(newSpeed);
   };
 
   const handleReset = () => {
@@ -69,44 +62,69 @@ function App() {
 
   // Draw reward chart
   useEffect(() => {
-    if (!canvasRef.current) return;
-    const canvas = canvasRef.current;
+    const canvas = rewardCanvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = w / dpr + 'px';
+    canvas.style.height = h / dpr + 'px';
 
-    const width = canvas.width;
-    const height = canvas.height;
+    ctx.clearRect(0, 0, w, h);
 
-    ctx.fillStyle = '#0a0a1a';
-    ctx.fillRect(0, 0, width, height);
+    // Background gradient
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+    bgGrad.addColorStop(0, 'rgba(10, 10, 30, 0.9)');
+    bgGrad.addColorStop(1, 'rgba(5, 5, 20, 0.95)');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, w, h);
 
-    // Draw grid
-    ctx.strokeStyle = '#1a1a3a';
+    // Grid lines
+    ctx.strokeStyle = 'rgba(50, 50, 100, 0.3)';
     ctx.lineWidth = 1;
-    for (let i = 0; i < 5; i++) {
-      const y = (height / 5) * i;
+    for (let i = 0; i <= 4; i++) {
+      const y = (h / 4) * i;
       ctx.beginPath();
       ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
+      ctx.lineTo(w, y);
       ctx.stroke();
     }
 
     if (rewardHistory.length < 2) return;
 
-    const maxReward = Math.max(...rewardHistory, 1);
-    const minReward = Math.min(...rewardHistory, -10);
-    const range = maxReward - minReward || 1;
+    const maxR = Math.max(...rewardHistory, 1);
+    const minR = Math.min(...rewardHistory, -5);
+    const range = maxR - minR || 1;
+    const padding = 10;
 
-    // Draw reward line
+    // Gradient fill under curve
+    ctx.beginPath();
+    for (let i = 0; i < rewardHistory.length; i++) {
+      const x = padding + (i / (rewardHistory.length - 1)) * (w - padding * 2);
+      const y = h - padding - ((rewardHistory[i] - minR) / range) * (h - padding * 2);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.lineTo(w - padding, h - padding);
+    ctx.lineTo(padding, h - padding);
+    ctx.closePath();
+    const fillGrad = ctx.createLinearGradient(0, 0, 0, h);
+    fillGrad.addColorStop(0, 'rgba(0, 255, 136, 0.15)');
+    fillGrad.addColorStop(1, 'rgba(0, 255, 136, 0.0)');
+    ctx.fillStyle = fillGrad;
+    ctx.fill();
+
+    // Main line
     ctx.beginPath();
     ctx.strokeStyle = '#00ff88';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.5;
     ctx.shadowColor = '#00ff88';
-    ctx.shadowBlur = 5;
-
+    ctx.shadowBlur = 8;
     for (let i = 0; i < rewardHistory.length; i++) {
-      const x = (i / (rewardHistory.length - 1)) * width;
-      const y = height - ((rewardHistory[i] - minReward) / range) * height;
+      const x = padding + (i / (rewardHistory.length - 1)) * (w - padding * 2);
+      const y = h - padding - ((rewardHistory[i] - minR) / range) * (h - padding * 2);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -114,192 +132,312 @@ function App() {
     ctx.shadowBlur = 0;
 
     // Labels
-    ctx.fillStyle = '#888';
-    ctx.font = '11px monospace';
-    ctx.fillText(`Max: ${maxReward.toFixed(1)}`, 5, 15);
-    ctx.fillText(`Min: ${minReward.toFixed(1)}`, 5, height - 5);
-    ctx.fillText(`Avg Reward History`, width - 130, 15);
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.font = '10px monospace';
+    ctx.fillText(`${maxR.toFixed(1)}`, 4, 14);
+    ctx.fillText(`${minR.toFixed(1)}`, 4, h - 4);
   }, [rewardHistory]);
 
+  // Draw epsilon chart
+  useEffect(() => {
+    const canvas = epsilonCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+    bgGrad.addColorStop(0, 'rgba(10, 10, 30, 0.9)');
+    bgGrad.addColorStop(1, 'rgba(5, 5, 20, 0.95)');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, w, h);
+
+    if (epsilonHistory.length < 2) return;
+
+    const padding = 10;
+
+    // Fill
+    ctx.beginPath();
+    for (let i = 0; i < epsilonHistory.length; i++) {
+      const x = padding + (i / (epsilonHistory.length - 1)) * (w - padding * 2);
+      const y = h - padding - epsilonHistory[i] * (h - padding * 2);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.lineTo(w - padding, h - padding);
+    ctx.lineTo(padding, h - padding);
+    ctx.closePath();
+    const fillGrad = ctx.createLinearGradient(0, 0, 0, h);
+    fillGrad.addColorStop(0, 'rgba(168, 85, 247, 0.2)');
+    fillGrad.addColorStop(1, 'rgba(168, 85, 247, 0.0)');
+    ctx.fillStyle = fillGrad;
+    ctx.fill();
+
+    // Line
+    ctx.beginPath();
+    ctx.strokeStyle = '#a855f7';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#a855f7';
+    ctx.shadowBlur = 6;
+    for (let i = 0; i < epsilonHistory.length; i++) {
+      const x = padding + (i / (epsilonHistory.length - 1)) * (w - padding * 2);
+      const y = h - padding - epsilonHistory[i] * (h - padding * 2);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Current value
+    const currentE = epsilonHistory[epsilonHistory.length - 1];
+    ctx.fillStyle = '#a855f7';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText(`ε = ${currentE.toFixed(3)}`, w - 80, 14);
+  }, [epsilonHistory]);
+
   return (
-    <div className="w-full h-screen flex flex-col bg-[#0a0a1a] text-white overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-3 bg-[#0d0d24] border-b border-[#1a1a3a]">
+    <div className="w-full h-screen flex flex-col bg-[#060612] text-white overflow-hidden font-sans">
+      {/* Top Bar */}
+      <header className="flex items-center justify-between px-5 py-2.5 bg-[#0a0a1f]/90 backdrop-blur-md border-b border-white/5 z-10">
         <div className="flex items-center gap-3">
-          <div className="w-3 h-3 rounded-full bg-green-400 animate-pulse shadow-lg shadow-green-400/50"></div>
-          <h1 className="text-xl font-bold bg-gradient-to-r from-green-400 to-blue-400 bg-clip-text text-transparent">
-            Deep RL Neural Network Simulator
+          <div className="relative">
+            <div className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-400' : 'bg-gray-500'}`}>
+              {isRunning && <div className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-75" />}
+            </div>
+          </div>
+          <h1 className="text-base font-bold tracking-tight">
+            <span className="bg-gradient-to-r from-emerald-400 via-cyan-400 to-blue-400 bg-clip-text text-transparent">
+              Deep RL
+            </span>
+            <span className="text-white/60 ml-1.5 font-light">Neural Network</span>
           </h1>
-        </div>
-        <div className="flex items-center gap-2 text-sm text-gray-400">
-          <span className="px-2 py-1 bg-[#1a1a3a] rounded text-green-400 font-mono">
-            DQN Agent
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/40 border border-white/10 font-mono">
+            v2.0
           </span>
-          <span className="px-2 py-1 bg-[#1a1a3a] rounded text-blue-400 font-mono">
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">
+            DQN
+          </span>
+          <span className="text-[10px] px-2 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-mono">
             6→128→64→8
           </span>
+          <span className="text-[10px] px-2 py-1 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 font-mono">
+            ε-greedy
+          </span>
         </div>
-      </div>
+      </header>
 
       <div className="flex flex-1 overflow-hidden">
         {/* 3D Viewport */}
         <div className="flex-1 relative">
           <div ref={containerRef} className="w-full h-full" />
-          
-          {/* Overlay controls */}
-          <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between">
-            <div className="flex gap-2">
+
+          {/* Bottom Controls */}
+          <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between pointer-events-none">
+            <div className="flex gap-2 pointer-events-auto">
               <button
                 onClick={toggleSimulation}
-                className={`px-4 py-2 rounded-lg font-semibold text-sm transition-all ${
+                className={`group flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all duration-300 backdrop-blur-md ${
                   isRunning
-                    ? 'bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30'
-                    : 'bg-green-500/20 text-green-400 border border-green-500/50 hover:bg-green-500/30'
+                    ? 'bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 hover:border-red-500/50 shadow-lg shadow-red-500/5'
+                    : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20 hover:border-emerald-500/50 shadow-lg shadow-emerald-500/5'
                 }`}
               >
-                {isRunning ? '⏸ Pause' : '▶ Start'}
+                <span className="text-lg">{isRunning ? '⏸' : '▶'}</span>
+                {isRunning ? 'Pause' : 'Start'}
               </button>
               <button
                 onClick={handleReset}
-                className="px-4 py-2 rounded-lg font-semibold text-sm bg-yellow-500/20 text-yellow-400 border border-yellow-500/50 hover:bg-yellow-500/30 transition-all"
+                className="group flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 hover:border-amber-500/50 transition-all duration-300 backdrop-blur-md shadow-lg shadow-amber-500/5"
               >
-                ↺ Reset
+                <span className="text-lg">↺</span>
+                Reset
               </button>
             </div>
 
-            <div className="flex items-center gap-3 bg-[#0d0d24]/80 backdrop-blur-sm rounded-lg px-4 py-2 border border-[#1a1a3a]">
-              <span className="text-xs text-gray-400">Speed:</span>
-              {[1, 5, 10, 20].map(s => (
+            <div className="flex items-center gap-2 pointer-events-auto bg-[#0a0a1f]/70 backdrop-blur-md rounded-xl px-4 py-2.5 border border-white/5">
+              <span className="text-[10px] text-white/40 uppercase tracking-wider mr-1">Speed</span>
+              {[1, 5, 10, 25].map(s => (
                 <button
                   key={s}
                   onClick={() => handleSpeedChange(s)}
-                  className={`px-2 py-1 rounded text-xs font-mono transition-all ${
+                  className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-all duration-200 ${
                     speed === s
-                      ? 'bg-blue-500/30 text-blue-400 border border-blue-500/50'
-                      : 'text-gray-500 hover:text-gray-300'
+                      ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 shadow-sm shadow-cyan-500/20'
+                      : 'text-white/30 hover:text-white/60 border border-transparent'
                   }`}
                 >
-                  {s}x
+                  {s}×
                 </button>
               ))}
             </div>
           </div>
 
           {/* Legend */}
-          <div className="absolute top-4 left-4 bg-[#0d0d24]/80 backdrop-blur-sm rounded-lg p-3 border border-[#1a1a3a]">
-            <div className="flex items-center gap-2 mb-1">
-              <div className="w-3 h-3 rounded-full bg-green-400 shadow-lg shadow-green-400/50"></div>
-              <span className="text-xs text-gray-300">Agent (Ball)</span>
+          <div className="absolute top-4 left-4 bg-[#0a0a1f]/60 backdrop-blur-md rounded-xl p-3 border border-white/5">
+            <div className="flex items-center gap-2.5 mb-2">
+              <div className="w-3 h-3 rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/50" />
+              <span className="text-xs text-white/70">Agent</span>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-red-400 shadow-lg shadow-red-400/50"></div>
-              <span className="text-xs text-gray-300">Target (Cube)</span>
+            <div className="flex items-center gap-2.5">
+              <div className="w-3 h-3 rounded-sm bg-red-400 shadow-lg shadow-red-400/50" />
+              <span className="text-xs text-white/70">Target</span>
+            </div>
+          </div>
+
+          {/* Catch counter */}
+          <div className="absolute top-4 right-4 bg-[#0a0a1f]/60 backdrop-blur-md rounded-xl px-4 py-2.5 border border-white/5">
+            <div className="text-[10px] text-white/40 uppercase tracking-wider">Catches</div>
+            <div className="text-2xl font-bold font-mono bg-gradient-to-r from-amber-400 to-orange-400 bg-clip-text text-transparent">
+              {stats.catchCount}
             </div>
           </div>
         </div>
 
         {/* Side Panel */}
-        <div className="w-80 bg-[#0d0d24] border-l border-[#1a1a3a] overflow-y-auto flex flex-col">
-          {/* Stats */}
-          <div className="p-4 border-b border-[#1a1a3a]">
-            <h2 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
-              Training Stats
+        <aside className="w-[320px] bg-[#0a0a1f]/80 backdrop-blur-md border-l border-white/5 overflow-y-auto flex flex-col">
+          {/* Stats Grid */}
+          <div className="p-4 border-b border-white/5">
+            <h2 className="text-[10px] font-semibold text-white/30 mb-3 uppercase tracking-widest">
+              Training Metrics
             </h2>
-            <div className="grid grid-cols-2 gap-3">
-              <StatBox label="Episode" value={stats.episode.toString()} color="text-blue-400" />
-              <StatBox label="Epsilon" value={stats.epsilon.toFixed(3)} color="text-purple-400" />
-              <StatBox label="Avg Reward" value={stats.avgReward.toFixed(1)} color="text-green-400" />
-              <StatBox label="Distance" value={stats.distance.toFixed(2)} color="text-yellow-400" />
-              <StatBox label="Memory" value={stats.memorySize.toString()} color="text-cyan-400" />
-              <StatBox label="Step" value={stats.step.toString()} color="text-orange-400" />
+            <div className="grid grid-cols-2 gap-2">
+              <StatCard label="Episode" value={stats.episode} icon="🎯" color="blue" />
+              <StatCard label="Epsilon" value={stats.epsilon.toFixed(3)} icon="🎲" color="purple" />
+              <StatCard label="Avg Reward" value={stats.avgReward.toFixed(1)} icon="📈" color="emerald" />
+              <StatCard label="Distance" value={stats.distance.toFixed(2)} icon="📏" color="amber" />
+              <StatCard label="Memory" value={stats.memorySize} icon="🧠" color="cyan" />
+              <StatCard label="Step" value={`${stats.step}/200`} icon="⏱" color="orange" />
             </div>
           </div>
 
           {/* Reward Chart */}
-          <div className="p-4 border-b border-[#1a1a3a]">
-            <h2 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
-              Reward History
-            </h2>
-            <canvas
-              ref={canvasRef}
-              width={280}
-              height={150}
-              className="w-full rounded-lg border border-[#1a1a3a]"
-            />
+          <div className="p-4 border-b border-white/5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-[10px] font-semibold text-white/30 uppercase tracking-widest">
+                Reward History
+              </h2>
+              <span className="text-[10px] font-mono text-emerald-400/60">
+                last 150 episodes
+              </span>
+            </div>
+            <div className="rounded-xl overflow-hidden border border-white/5">
+              <canvas
+                ref={rewardCanvasRef}
+                width={560}
+                height={240}
+                className="w-full"
+              />
+            </div>
           </div>
 
           {/* Epsilon Chart */}
-          <div className="p-4 border-b border-[#1a1a3a]">
-            <h2 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
-              Exploration (ε)
-            </h2>
-            <div className="w-full bg-[#1a1a3a] rounded-full h-4 overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-300 rounded-full"
-                style={{ width: `${stats.epsilon * 100}%` }}
-              />
+          <div className="p-4 border-b border-white/5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-[10px] font-semibold text-white/30 uppercase tracking-widest">
+                Exploration Rate
+              </h2>
+              <span className="text-[10px] font-mono text-purple-400/60">
+                ε-greedy decay
+              </span>
             </div>
-            <div className="flex justify-between mt-1">
-              <span className="text-xs text-gray-500">0 (exploit)</span>
-              <span className="text-xs text-gray-500">1 (explore)</span>
+            <div className="rounded-xl overflow-hidden border border-white/5">
+              <canvas
+                ref={epsilonCanvasRef}
+                width={560}
+                height={180}
+                className="w-full"
+              />
             </div>
           </div>
 
           {/* Network Architecture */}
-          <div className="p-4 border-b border-[#1a1a3a]">
-            <h2 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
+          <div className="p-4 border-b border-white/5">
+            <h2 className="text-[10px] font-semibold text-white/30 mb-3 uppercase tracking-widest">
               Network Architecture
             </h2>
-            <div className="space-y-2">
-              <NetworkLayer name="Input" size={6} desc="State vector" />
-              <NetworkLayer name="Hidden 1" size={128} desc="ReLU activation" />
-              <NetworkLayer name="Hidden 2" size={64} desc="ReLU activation" />
-              <NetworkLayer name="Output" size={8} desc="Q-values (8 actions)" />
+            <div className="space-y-1.5">
+              <LayerBar name="Input" size={6} total={128} desc="State [pos, target, vel]" color="emerald" />
+              <LayerBar name="Hidden 1" size={128} total={128} desc="ReLU + Dense" color="blue" />
+              <LayerBar name="Hidden 2" size={64} total={128} desc="ReLU + Dense" color="purple" />
+              <LayerBar name="Output" size={8} total={128} desc="Q-values (8 actions)" color="amber" />
+            </div>
+            <div className="mt-3 flex items-center gap-2 text-[10px] text-white/30">
+              <span className="px-1.5 py-0.5 rounded bg-white/5">Adam</span>
+              <span>lr=0.001</span>
+              <span>•</span>
+              <span>γ=0.95</span>
+              <span>•</span>
+              <span>batch=32</span>
             </div>
           </div>
 
           {/* Info */}
           <div className="p-4 mt-auto">
-            <h2 className="text-sm font-semibold text-gray-400 mb-2 uppercase tracking-wider">
-              How it works
+            <h2 className="text-[10px] font-semibold text-white/30 mb-2 uppercase tracking-widest">
+              About
             </h2>
-            <p className="text-xs text-gray-500 leading-relaxed">
-              The green ball (agent) uses a Deep Q-Network to learn how to reach the red cube (target).
-              When the ball touches the cube, it receives a reward and the cube teleports to a new position.
-              The agent improves through experience replay and epsilon-greedy exploration.
+            <p className="text-[11px] text-white/40 leading-relaxed">
+              A <span className="text-emerald-400/70">Deep Q-Network</span> controls the agent (green sphere) 
+              to reach the target (red cube). On contact, the target teleports and the agent receives 
+              a <span className="text-amber-400/70">+100 reward</span>. The agent learns through 
+              experience replay and ε-greedy exploration with exponential decay.
             </p>
           </div>
-        </div>
+        </aside>
       </div>
     </div>
   );
 }
 
-function StatBox({ label, value, color }: { label: string; value: string; color: string }) {
+function StatCard({ label, value, icon, color }: { label: string; value: string | number; icon: string; color: string }) {
+  const colorClasses: Record<string, string> = {
+    blue: 'from-blue-500/10 to-blue-500/5 border-blue-500/10 text-blue-400',
+    purple: 'from-purple-500/10 to-purple-500/5 border-purple-500/10 text-purple-400',
+    emerald: 'from-emerald-500/10 to-emerald-500/5 border-emerald-500/10 text-emerald-400',
+    amber: 'from-amber-500/10 to-amber-500/5 border-amber-500/10 text-amber-400',
+    cyan: 'from-cyan-500/10 to-cyan-500/5 border-cyan-500/10 text-cyan-400',
+    orange: 'from-orange-500/10 to-orange-500/5 border-orange-500/10 text-orange-400',
+  };
+  const cls = colorClasses[color] || colorClasses.blue;
   return (
-    <div className="bg-[#1a1a3a] rounded-lg p-2">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className={`text-lg font-mono font-bold ${color}`}>{value}</div>
+    <div className={`bg-gradient-to-br ${cls} rounded-xl p-2.5 border`}>
+      <div className="flex items-center gap-1.5 mb-1">
+        <span className="text-xs">{icon}</span>
+        <span className="text-[10px] text-white/40">{label}</span>
+      </div>
+      <div className="text-lg font-bold font-mono">{value}</div>
     </div>
   );
 }
 
-function NetworkLayer({ name, size, desc }: { name: string; size: number; desc: string }) {
+function LayerBar({ name, size, total, desc, color }: { name: string; size: number; total: number; desc: string; color: string }) {
+  const colorMap: Record<string, string> = {
+    emerald: 'bg-emerald-400',
+    blue: 'bg-blue-400',
+    purple: 'bg-purple-400',
+    amber: 'bg-amber-400',
+  };
+  const barColor = colorMap[color] || 'bg-blue-400';
+  const width = (size / total) * 100;
   return (
-    <div className="flex items-center gap-3 bg-[#1a1a3a] rounded-lg p-2">
-      <div className="flex gap-0.5">
-        {Array.from({ length: Math.min(size, 8) }).map((_, i) => (
-          <div
-            key={i}
-            className="w-2 h-2 rounded-full bg-blue-400/60"
-            style={{ opacity: 0.3 + (i / Math.min(size, 8)) * 0.7 }}
-          />
-        ))}
-        {size > 8 && <span className="text-xs text-gray-500 ml-1">...</span>}
-      </div>
+    <div className="flex items-center gap-2 bg-white/[0.02] rounded-lg px-2.5 py-2 border border-white/5">
       <div className="flex-1">
-        <div className="text-xs font-semibold text-gray-300">{name} ({size})</div>
-        <div className="text-xs text-gray-500">{desc}</div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11px] font-medium text-white/70">{name}</span>
+          <span className="text-[10px] font-mono text-white/30">{size}</span>
+        </div>
+        <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+          <div
+            className={`h-full ${barColor} rounded-full transition-all duration-500 opacity-60`}
+            style={{ width: `${Math.max(width, 3)}%` }}
+          />
+        </div>
+        <span className="text-[9px] text-white/25 mt-0.5 block">{desc}</span>
       </div>
     </div>
   );
