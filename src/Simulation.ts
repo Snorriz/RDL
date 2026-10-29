@@ -6,10 +6,14 @@ export class Simulation {
   camera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
   ball: THREE.Mesh;
+  ballOuter: THREE.Mesh;
   cube: THREE.Mesh;
+  cubeWireframe: THREE.LineSegments;
   ground: THREE.Mesh;
-  trail: THREE.Line;
-  trailPoints: THREE.Vector3[];
+  trail: THREE.Points;
+  trailPositions: Float32Array;
+  trailColors: Float32Array;
+  trailIndex: number;
   agent: DQNAgent;
   ballVelocity: THREE.Vector3;
   arenaSize: number;
@@ -19,160 +23,381 @@ export class Simulation {
   speed: number;
   onStatsUpdate: ((stats: SimStats) => void) | null;
   animationId: number | null;
-  cubeGlow: THREE.PointLight;
-  ballGlow: THREE.PointLight;
   particles: THREE.Points;
   particlePositions: Float32Array;
   particleVelocities: number[][];
+  particleLifetimes: number[];
+  ambientParticles: THREE.Points;
+  ambientParticlePositions: Float32Array;
   rewardFlash: number;
-  gridHelper: THREE.GridHelper;
+  container: HTMLElement;
+  bloomComposer: any;
+  ringEffect: THREE.Mesh;
+  ringScale: number;
+  ringOpacity: number;
+  connectionLine: THREE.Line;
+  time: number;
+  prevDistance: number;
+  catchCount: number;
 
   constructor(container: HTMLElement) {
-    // Scene setup
+    this.container = container;
+    this.time = 0;
+    this.catchCount = 0;
+    this.prevDistance = 0;
+
+    // Scene
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0a0a1a);
-    this.scene.fog = new THREE.Fog(0x0a0a1a, 30, 60);
 
     // Camera
     this.camera = new THREE.PerspectiveCamera(
-      60,
+      55,
       container.clientWidth / container.clientHeight,
       0.1,
       1000
     );
-    this.camera.position.set(0, 18, 18);
+    this.camera.position.set(0, 22, 20);
     this.camera.lookAt(0, 0, 0);
 
-    // Renderer
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // Renderer with high quality
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      powerPreference: 'high-performance',
+    });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.2;
     container.appendChild(this.renderer.domElement);
 
     // Arena
-    this.arenaSize = 12;
+    this.arenaSize = 14;
+
+    // Background gradient sphere
+    const bgGeo = new THREE.SphereGeometry(80, 32, 32);
+    const bgMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      uniforms: {
+        colorTop: { value: new THREE.Color(0x0a0020) },
+        colorBottom: { value: new THREE.Color(0x000510) },
+        colorAccent: { value: new THREE.Color(0x0a0030) },
+      },
+      vertexShader: `
+        varying vec3 vWorldPosition;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 colorTop;
+        uniform vec3 colorBottom;
+        uniform vec3 colorAccent;
+        varying vec3 vWorldPosition;
+        void main() {
+          float h = normalize(vWorldPosition).y;
+          vec3 col = mix(colorBottom, colorTop, max(h, 0.0));
+          col = mix(col, colorAccent, smoothstep(-0.2, 0.2, h) * 0.5);
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+    });
+    const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+    this.scene.add(bgMesh);
 
     // Lights
-    const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
+    const ambientLight = new THREE.AmbientLight(0x202040, 0.4);
     this.scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(10, 20, 10);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 2048;
-    dirLight.shadow.mapSize.height = 2048;
-    dirLight.shadow.camera.near = 0.5;
-    dirLight.shadow.camera.far = 50;
-    dirLight.shadow.camera.left = -15;
-    dirLight.shadow.camera.right = 15;
-    dirLight.shadow.camera.top = 15;
-    dirLight.shadow.camera.bottom = -15;
-    this.scene.add(dirLight);
+    const mainLight = new THREE.DirectionalLight(0xeeeeff, 0.6);
+    mainLight.position.set(15, 25, 10);
+    mainLight.castShadow = true;
+    mainLight.shadow.mapSize.width = 2048;
+    mainLight.shadow.mapSize.height = 2048;
+    mainLight.shadow.camera.near = 0.5;
+    mainLight.shadow.camera.far = 60;
+    mainLight.shadow.camera.left = -20;
+    mainLight.shadow.camera.right = 20;
+    mainLight.shadow.camera.top = 20;
+    mainLight.shadow.camera.bottom = -20;
+    mainLight.shadow.bias = -0.001;
+    this.scene.add(mainLight);
 
-    // Grid
-    this.gridHelper = new THREE.GridHelper(this.arenaSize * 2, 24, 0x1a1a3a, 0x1a1a3a);
-    this.gridHelper.position.y = 0.01;
-    this.scene.add(this.gridHelper);
+    const rimLight = new THREE.DirectionalLight(0x4444ff, 0.3);
+    rimLight.position.set(-10, 10, -15);
+    this.scene.add(rimLight);
 
-    // Ground
-    const groundGeo = new THREE.PlaneGeometry(this.arenaSize * 2, this.arenaSize * 2);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x111122,
-      roughness: 0.8,
-      metalness: 0.2,
+    // Ground with custom shader (neon grid)
+    const groundGeo = new THREE.PlaneGeometry(this.arenaSize * 2.5, this.arenaSize * 2.5, 1, 1);
+    const groundMat = new THREE.ShaderMaterial({
+      uniforms: {
+        time: { value: 0 },
+        arenaSize: { value: this.arenaSize },
+        ballPos: { value: new THREE.Vector2(0, 0) },
+        cubePos: { value: new THREE.Vector2(0, 0) },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vPos;
+        void main() {
+          vUv = uv;
+          vPos = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float time;
+        uniform float arenaSize;
+        uniform vec2 ballPos;
+        uniform vec2 cubePos;
+        varying vec2 vUv;
+        varying vec3 vPos;
+        
+        void main() {
+          vec2 pos = vPos.xz;
+          
+          // Grid
+          vec2 grid = abs(fract(pos / 2.0 - 0.5) - 0.5) / (fwidth(pos / 2.0) * 1.5);
+          float line = min(grid.x, grid.y);
+          float gridAlpha = 1.0 - min(line, 1.0);
+          
+          // Arena boundary glow
+          float distToEdge = min(
+            min(abs(pos.x + arenaSize), abs(pos.x - arenaSize)),
+            min(abs(pos.y + arenaSize), abs(pos.y - arenaSize))
+          );
+          float edgeGlow = smoothstep(2.0, 0.0, distToEdge) * 0.6;
+          
+          // Ball proximity glow
+          float distToBall = length(pos - ballPos);
+          float ballGlow = smoothstep(5.0, 0.0, distToBall) * 0.15;
+          
+          // Cube proximity glow
+          float distToCube = length(pos - cubePos);
+          float cubeGlow = smoothstep(5.0, 0.0, distToCube) * 0.15;
+          
+          // Base color
+          vec3 baseColor = vec3(0.02, 0.02, 0.05);
+          vec3 gridColor = vec3(0.1, 0.15, 0.4) * gridAlpha * 0.4;
+          vec3 edgeColor = vec3(0.2, 0.1, 0.8) * edgeGlow;
+          vec3 ballColor = vec3(0.0, 1.0, 0.5) * ballGlow;
+          vec3 cubeColor = vec3(1.0, 0.2, 0.2) * cubeGlow;
+          
+          vec3 finalColor = baseColor + gridColor + edgeColor + ballColor + cubeColor;
+          
+          // Fade at edges
+          float fade = smoothstep(arenaSize * 1.2, arenaSize * 0.8, max(abs(pos.x), abs(pos.y)));
+          
+          gl_FragColor = vec4(finalColor * fade, 1.0);
+        }
+      `,
     });
     this.ground = new THREE.Mesh(groundGeo, groundMat);
     this.ground.rotation.x = -Math.PI / 2;
-    this.ground.receiveShadow = true;
+    this.ground.position.y = -0.01;
     this.scene.add(this.ground);
 
-    // Arena border
-    const borderGeo = new THREE.BoxGeometry(this.arenaSize * 2, 0.3, this.arenaSize * 2);
-    const edges = new THREE.EdgesGeometry(borderGeo);
-    const borderLine = new THREE.LineSegments(
-      edges,
-      new THREE.LineBasicMaterial({ color: 0x3333ff, linewidth: 2 })
-    );
-    borderLine.position.y = 0.15;
-    this.scene.add(borderLine);
+    // Shadow receiving plane
+    const shadowGeo = new THREE.PlaneGeometry(this.arenaSize * 2.5, this.arenaSize * 2.5);
+    const shadowMat = new THREE.ShadowMaterial({ opacity: 0.3 });
+    const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat);
+    shadowPlane.rotation.x = -Math.PI / 2;
+    shadowPlane.position.y = 0;
+    shadowPlane.receiveShadow = true;
+    this.scene.add(shadowPlane);
 
-    // Ball (Agent)
-    const ballGeo = new THREE.SphereGeometry(0.5, 32, 32);
+    // Arena border (neon)
+    const borderPoints = [
+      new THREE.Vector3(-this.arenaSize, 0, -this.arenaSize),
+      new THREE.Vector3(this.arenaSize, 0, -this.arenaSize),
+      new THREE.Vector3(this.arenaSize, 0, this.arenaSize),
+      new THREE.Vector3(-this.arenaSize, 0, this.arenaSize),
+      new THREE.Vector3(-this.arenaSize, 0, -this.arenaSize),
+    ];
+    const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPoints);
+    const borderMat = new THREE.LineBasicMaterial({ color: 0x4444ff, linewidth: 2 });
+    const border = new THREE.Line(borderGeo, borderMat);
+    border.position.y = 0.05;
+    this.scene.add(border);
+
+    // Corner pillars
+    const pillarGeo = new THREE.CylinderGeometry(0.08, 0.08, 3, 8);
+    const pillarMat = new THREE.MeshStandardMaterial({
+      color: 0x4444ff,
+      emissive: 0x2222ff,
+      emissiveIntensity: 0.5,
+    });
+    const corners = [
+      [-this.arenaSize, -this.arenaSize],
+      [this.arenaSize, -this.arenaSize],
+      [this.arenaSize, this.arenaSize],
+      [-this.arenaSize, this.arenaSize],
+    ];
+    corners.forEach(([x, z]) => {
+      const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+      pillar.position.set(x, 1.5, z);
+      this.scene.add(pillar);
+      
+      // Pillar light
+      const pLight = new THREE.PointLight(0x4444ff, 0.5, 5);
+      pLight.position.set(x, 3, z);
+      this.scene.add(pLight);
+    });
+
+    // Ball (Agent) - inner sphere
+    const ballGeo = new THREE.SphereGeometry(0.45, 64, 64);
     const ballMat = new THREE.MeshStandardMaterial({
       color: 0x00ff88,
-      roughness: 0.3,
-      metalness: 0.7,
+      roughness: 0.1,
+      metalness: 0.9,
       emissive: 0x00ff88,
-      emissiveIntensity: 0.3,
+      emissiveIntensity: 0.8,
     });
     this.ball = new THREE.Mesh(ballGeo, ballMat);
-    this.ball.position.set(0, 0.5, 0);
+    this.ball.position.set(0, 0.6, 0);
     this.ball.castShadow = true;
     this.scene.add(this.ball);
 
-    // Ball glow
-    this.ballGlow = new THREE.PointLight(0x00ff88, 2, 5);
-    this.ball.add(this.ballGlow);
+    // Ball outer glow sphere
+    const ballOuterGeo = new THREE.SphereGeometry(0.65, 32, 32);
+    const ballOuterMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff88,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.BackSide,
+    });
+    this.ballOuter = new THREE.Mesh(ballOuterGeo, ballOuterMat);
+    this.ball.add(this.ballOuter);
 
-    // Cube (Target)
-    const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
+    // Ball point light
+    const ballLight = new THREE.PointLight(0x00ff88, 3, 8);
+    ballLight.position.set(0, 0, 0);
+    this.ball.add(ballLight);
+
+    // Cube (Target) - solid
+    const cubeGeo = new THREE.BoxGeometry(0.9, 0.9, 0.9);
     const cubeMat = new THREE.MeshStandardMaterial({
-      color: 0xff4444,
-      roughness: 0.3,
-      metalness: 0.7,
-      emissive: 0xff4444,
-      emissiveIntensity: 0.3,
+      color: 0xff3344,
+      roughness: 0.1,
+      metalness: 0.9,
+      emissive: 0xff2233,
+      emissiveIntensity: 0.6,
     });
     this.cube = new THREE.Mesh(cubeGeo, cubeMat);
-    this.cube.position.set(
-      (Math.random() - 0.5) * this.arenaSize * 1.5,
-      0.5,
-      (Math.random() - 0.5) * this.arenaSize * 1.5
-    );
+    this.cube.position.set(5, 0.6, 5);
     this.cube.castShadow = true;
     this.scene.add(this.cube);
 
-    // Cube glow
-    this.cubeGlow = new THREE.PointLight(0xff4444, 2, 5);
-    this.cube.add(this.cubeGlow);
+    // Cube wireframe
+    const cubeEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.1, 1.1, 1.1));
+    const cubeWireMat = new THREE.LineBasicMaterial({ color: 0xff6666, transparent: true, opacity: 0.6 });
+    this.cubeWireframe = new THREE.LineSegments(cubeEdges, cubeWireMat);
+    this.cube.add(this.cubeWireframe);
 
-    // Trail
-    this.trailPoints = [];
-    const trailGeo = new THREE.BufferGeometry();
-    const trailMat = new THREE.LineBasicMaterial({
-      color: 0x00ff88,
+    // Cube light
+    const cubeLight = new THREE.PointLight(0xff3344, 3, 8);
+    this.cube.add(cubeLight);
+
+    // Ring effect (for catch animation)
+    const ringGeo = new THREE.RingGeometry(0.5, 0.7, 64);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xffaa00,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0,
+      side: THREE.DoubleSide,
     });
-    this.trail = new THREE.Line(trailGeo, trailMat);
+    this.ringEffect = new THREE.Mesh(ringGeo, ringMat);
+    this.ringEffect.rotation.x = -Math.PI / 2;
+    this.ringEffect.position.y = 0.1;
+    this.ringScale = 0;
+    this.ringOpacity = 0;
+    this.scene.add(this.ringEffect);
+
+    // Connection line (ball to cube)
+    const connGeo = new THREE.BufferGeometry();
+    connGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
+    const connMat = new THREE.LineBasicMaterial({
+      color: 0x4488ff,
+      transparent: true,
+      opacity: 0.2,
+    });
+    this.connectionLine = new THREE.Line(connGeo, connMat);
+    this.scene.add(this.connectionLine);
+
+    // Trail particles
+    const trailCount = 200;
+    this.trailPositions = new Float32Array(trailCount * 3);
+    this.trailColors = new Float32Array(trailCount * 3);
+    this.trailIndex = 0;
+    for (let i = 0; i < trailCount; i++) {
+      this.trailPositions[i * 3 + 1] = -10; // hide below
+      this.trailColors[i * 3] = 0;
+      this.trailColors[i * 3 + 1] = 1;
+      this.trailColors[i * 3 + 2] = 0.5;
+    }
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(this.trailPositions, 3));
+    trailGeo.setAttribute('color', new THREE.BufferAttribute(this.trailColors, 3));
+    const trailMat = new THREE.PointsMaterial({
+      size: 0.12,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.8,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.trail = new THREE.Points(trailGeo, trailMat);
     this.scene.add(this.trail);
 
-    // Particles
-    const particleCount = 100;
+    // Catch particles
+    const particleCount = 150;
     this.particlePositions = new Float32Array(particleCount * 3);
     this.particleVelocities = [];
+    this.particleLifetimes = [];
     for (let i = 0; i < particleCount; i++) {
-      this.particlePositions[i * 3] = 0;
       this.particlePositions[i * 3 + 1] = -10;
-      this.particlePositions[i * 3 + 2] = 0;
       this.particleVelocities.push([0, 0, 0]);
+      this.particleLifetimes.push(0);
     }
     const particleGeo = new THREE.BufferGeometry();
     particleGeo.setAttribute('position', new THREE.BufferAttribute(this.particlePositions, 3));
     const particleMat = new THREE.PointsMaterial({
-      color: 0xffff00,
-      size: 0.15,
+      color: 0xffaa44,
+      size: 0.18,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
     this.particles = new THREE.Points(particleGeo, particleMat);
     this.scene.add(this.particles);
 
+    // Ambient floating particles
+    const ambientCount = 300;
+    this.ambientParticlePositions = new Float32Array(ambientCount * 3);
+    for (let i = 0; i < ambientCount; i++) {
+      this.ambientParticlePositions[i * 3] = (Math.random() - 0.5) * 40;
+      this.ambientParticlePositions[i * 3 + 1] = Math.random() * 15;
+      this.ambientParticlePositions[i * 3 + 2] = (Math.random() - 0.5) * 40;
+    }
+    const ambientGeo = new THREE.BufferGeometry();
+    ambientGeo.setAttribute('position', new THREE.BufferAttribute(this.ambientParticlePositions, 3));
+    const ambientMat = new THREE.PointsMaterial({
+      color: 0x6644ff,
+      size: 0.06,
+      transparent: true,
+      opacity: 0.4,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.ambientParticles = new THREE.Points(ambientGeo, ambientMat);
+    this.scene.add(this.ambientParticles);
+
     // Agent
-    // State: [ballX, ballZ, cubeX, cubeZ, velX, velZ]
-    // Actions: 0-7 (8 directions)
     this.agent = new DQNAgent(6, 8, [128, 64]);
     this.ballVelocity = new THREE.Vector3(0, 0, 0);
     this.maxSteps = 200;
@@ -184,11 +409,12 @@ export class Simulation {
     this.rewardFlash = 0;
 
     // Handle resize
-    window.addEventListener('resize', () => {
-      this.camera.aspect = container.clientWidth / container.clientHeight;
+    const resizeHandler = () => {
+      this.camera.aspect = this.container.clientWidth / this.container.clientHeight;
       this.camera.updateProjectionMatrix();
-      this.renderer.setSize(container.clientWidth, container.clientHeight);
-    });
+      this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+    };
+    window.addEventListener('resize', resizeHandler);
   }
 
   getState(): number[] {
@@ -211,46 +437,87 @@ export class Simulation {
   moveCube() {
     const oldPos = this.cube.position.clone();
     
-    // Move cube to a new random position
-    this.cube.position.x = (Math.random() - 0.5) * this.arenaSize * 1.6;
-    this.cube.position.z = (Math.random() - 0.5) * this.arenaSize * 1.6;
+    // Move cube to new random position
+    let newX: number, newZ: number;
+    do {
+      newX = (Math.random() - 0.5) * this.arenaSize * 1.6;
+      newZ = (Math.random() - 0.5) * this.arenaSize * 1.6;
+    } while (Math.sqrt((newX - this.ball.position.x) ** 2 + (newZ - this.ball.position.z) ** 2) < 4);
+    
+    this.cube.position.x = newX;
+    this.cube.position.z = newZ;
 
     // Spawn particles at old position
     this.spawnParticles(oldPos.x, oldPos.y, oldPos.z);
+    
+    // Trigger ring effect
+    this.ringEffect.position.x = oldPos.x;
+    this.ringEffect.position.z = oldPos.z;
+    this.ringScale = 0.5;
+    this.ringOpacity = 1.0;
+    
     this.rewardFlash = 1.0;
+    this.catchCount++;
   }
 
   spawnParticles(x: number, y: number, z: number) {
     for (let i = 0; i < this.particleVelocities.length; i++) {
       this.particlePositions[i * 3] = x;
-      this.particlePositions[i * 3 + 1] = y;
+      this.particlePositions[i * 3 + 1] = y + 0.5;
       this.particlePositions[i * 3 + 2] = z;
+      const angle = Math.random() * Math.PI * 2;
+      const speed = Math.random() * 0.2 + 0.05;
       this.particleVelocities[i] = [
-        (Math.random() - 0.5) * 0.3,
-        Math.random() * 0.2,
-        (Math.random() - 0.5) * 0.3,
+        Math.cos(angle) * speed,
+        Math.random() * 0.15 + 0.05,
+        Math.sin(angle) * speed,
       ];
+      this.particleLifetimes[i] = 1.0;
     }
   }
 
   updateParticles() {
     for (let i = 0; i < this.particleVelocities.length; i++) {
-      this.particlePositions[i * 3] += this.particleVelocities[i][0];
-      this.particlePositions[i * 3 + 1] += this.particleVelocities[i][1];
-      this.particlePositions[i * 3 + 2] += this.particleVelocities[i][2];
-      this.particleVelocities[i][1] -= 0.005; // gravity
+      if (this.particleLifetimes[i] > 0) {
+        this.particlePositions[i * 3] += this.particleVelocities[i][0];
+        this.particlePositions[i * 3 + 1] += this.particleVelocities[i][1];
+        this.particlePositions[i * 3 + 2] += this.particleVelocities[i][2];
+        this.particleVelocities[i][1] -= 0.003;
+        this.particleLifetimes[i] -= 0.015;
+        
+        if (this.particleLifetimes[i] <= 0) {
+          this.particlePositions[i * 3 + 1] = -10;
+        }
+      }
     }
     this.particles.geometry.attributes.position.needsUpdate = true;
+  }
+
+  updateTrail() {
+    const idx = this.trailIndex % (this.trailPositions.length / 3);
+    this.trailPositions[idx * 3] = this.ball.position.x;
+    this.trailPositions[idx * 3 + 1] = 0.15;
+    this.trailPositions[idx * 3 + 2] = this.ball.position.z;
+    this.trailIndex++;
+    this.trail.geometry.attributes.position.needsUpdate = true;
+  }
+
+  updateAmbientParticles() {
+    for (let i = 0; i < this.ambientParticlePositions.length / 3; i++) {
+      this.ambientParticlePositions[i * 3 + 1] += Math.sin(this.time * 0.5 + i) * 0.002;
+      this.ambientParticlePositions[i * 3] += Math.cos(this.time * 0.3 + i * 0.7) * 0.001;
+    }
+    this.ambientParticles.geometry.attributes.position.needsUpdate = true;
   }
 
   step(): number {
     const state = this.getState();
     const action = this.agent.act(state);
-    const prevDistance = this.getDistance();
+    const prevDist = this.getDistance();
 
     // Convert action to direction (8 directions)
     const angle = (action / 8) * Math.PI * 2;
-    const moveSpeed = 0.15;
+    const moveSpeed = 0.18;
     this.ballVelocity.x = Math.cos(angle) * moveSpeed;
     this.ballVelocity.z = Math.sin(angle) * moveSpeed;
 
@@ -259,33 +526,29 @@ export class Simulation {
     this.ball.position.z += this.ballVelocity.z;
 
     // Clamp to arena
-    this.ball.position.x = Math.max(-this.arenaSize, Math.min(this.arenaSize, this.ball.position.x));
-    this.ball.position.z = Math.max(-this.arenaSize, Math.min(this.arenaSize, this.ball.position.z));
+    this.ball.position.x = Math.max(-this.arenaSize + 0.5, Math.min(this.arenaSize - 0.5, this.ball.position.x));
+    this.ball.position.z = Math.max(-this.arenaSize + 0.5, Math.min(this.arenaSize - 0.5, this.ball.position.z));
 
     // Calculate reward
-    const newDistance = this.getDistance();
+    const newDist = this.getDistance();
     let reward = 0;
     let done = false;
 
-    // Reward for getting closer
-    reward += (prevDistance - newDistance) * 10;
+    reward += (prevDist - newDist) * 10;
 
-    // Check if reached cube
-    if (newDistance < 1.2) {
+    if (newDist < 1.2) {
       reward += 100;
       done = true;
       this.moveCube();
     }
 
-    // Penalty for hitting walls
     if (
-      Math.abs(this.ball.position.x) >= this.arenaSize ||
-      Math.abs(this.ball.position.z) >= this.arenaSize
+      Math.abs(this.ball.position.x) >= this.arenaSize - 0.5 ||
+      Math.abs(this.ball.position.z) >= this.arenaSize - 0.5
     ) {
       reward -= 1;
     }
 
-    // Small step penalty
     reward -= 0.1;
 
     this.currentStep++;
@@ -293,27 +556,17 @@ export class Simulation {
       done = true;
     }
 
-    // Store experience
     const nextState = this.getState();
     this.agent.remember(state, action, reward, nextState, done);
     this.agent.replay();
 
-    // Update trail
-    this.trailPoints.push(new THREE.Vector3(this.ball.position.x, 0.1, this.ball.position.z));
-    if (this.trailPoints.length > 100) {
-      this.trailPoints.shift();
-    }
-    const trailGeo = new THREE.BufferGeometry().setFromPoints(this.trailPoints);
-    this.trail.geometry.dispose();
-    this.trail.geometry = trailGeo;
+    this.updateTrail();
 
     if (done) {
       this.agent.endEpisode();
       this.currentStep = 0;
-      this.trailPoints = [];
-      // Reset ball position
-      this.ball.position.x = (Math.random() - 0.5) * this.arenaSize;
-      this.ball.position.z = (Math.random() - 0.5) * this.arenaSize;
+      this.ball.position.x = (Math.random() - 0.5) * this.arenaSize * 0.8;
+      this.ball.position.z = (Math.random() - 0.5) * this.arenaSize * 0.8;
       this.ballVelocity.set(0, 0, 0);
     }
 
@@ -323,7 +576,8 @@ export class Simulation {
   animate = () => {
     if (!this.isRunning) return;
 
-    // Run multiple steps per frame for faster training
+    this.time += 0.016;
+
     const stepsPerFrame = this.speed;
     for (let i = 0; i < stepsPerFrame; i++) {
       this.step();
@@ -331,29 +585,65 @@ export class Simulation {
 
     // Visual updates
     this.updateParticles();
+    this.updateAmbientParticles();
 
-    // Animate cube rotation
-    this.cube.rotation.y += 0.02;
-    this.cube.rotation.x += 0.01;
+    // Animate cube
+    this.cube.rotation.y += 0.025;
+    this.cube.rotation.x = Math.sin(this.time * 2) * 0.15;
+    this.cube.position.y = 0.6 + Math.sin(this.time * 3) * 0.15;
+    this.cubeWireframe.rotation.y -= 0.01;
+    this.cubeWireframe.rotation.z += 0.005;
 
-    // Animate ball pulsing
-    const scale = 1 + Math.sin(Date.now() * 0.005) * 0.05;
-    this.ball.scale.set(scale, scale, scale);
+    // Animate ball
+    const bScale = 1 + Math.sin(this.time * 4) * 0.05;
+    this.ball.scale.set(bScale, bScale, bScale);
+    this.ballOuter.scale.set(
+      1 + Math.sin(this.time * 2) * 0.1,
+      1 + Math.sin(this.time * 2) * 0.1,
+      1 + Math.sin(this.time * 2) * 0.1
+    );
+    (this.ballOuter.material as THREE.MeshBasicMaterial).opacity = 0.1 + Math.sin(this.time * 3) * 0.05;
+
+    // Ring effect animation
+    if (this.ringOpacity > 0) {
+      this.ringScale += 0.15;
+      this.ringOpacity -= 0.025;
+      this.ringEffect.scale.set(this.ringScale, this.ringScale, 1);
+      (this.ringEffect.material as THREE.MeshBasicMaterial).opacity = Math.max(0, this.ringOpacity);
+    }
 
     // Reward flash
     if (this.rewardFlash > 0) {
       this.rewardFlash -= 0.02;
       const mat = this.cube.material as THREE.MeshStandardMaterial;
-      mat.emissiveIntensity = 0.3 + this.rewardFlash * 2;
-      this.cubeGlow.intensity = 2 + this.rewardFlash * 5;
+      mat.emissiveIntensity = 0.6 + this.rewardFlash * 3;
     }
 
-    // Camera follows ball slightly
-    const targetCamX = this.ball.position.x * 0.3;
-    const targetCamZ = this.ball.position.z * 0.3 + 18;
-    this.camera.position.x += (targetCamX - this.camera.position.x) * 0.02;
-    this.camera.position.z += (targetCamZ - this.camera.position.z) * 0.02;
-    this.camera.lookAt(0, 0, 0);
+    // Connection line
+    const connPos = this.connectionLine.geometry.attributes.position as THREE.BufferAttribute;
+    connPos.setXYZ(0, this.ball.position.x, 0.3, this.ball.position.z);
+    connPos.setXYZ(1, this.cube.position.x, 0.3, this.cube.position.z);
+    connPos.needsUpdate = true;
+    const dist = this.getDistance();
+    (this.connectionLine.material as THREE.LineBasicMaterial).opacity = Math.max(0.05, 0.3 - dist * 0.02);
+
+    // Update ground shader uniforms
+    const groundUniforms = (this.ground.material as THREE.ShaderMaterial).uniforms;
+    groundUniforms.time.value = this.time;
+    groundUniforms.ballPos.value.set(this.ball.position.x, this.ball.position.z);
+    groundUniforms.cubePos.value.set(this.cube.position.x, this.cube.position.z);
+
+    // Camera smooth follow
+    const targetCamX = this.ball.position.x * 0.25;
+    const targetCamZ = this.ball.position.z * 0.25 + 20;
+    this.camera.position.x += (targetCamX - this.camera.position.x) * 0.015;
+    this.camera.position.z += (targetCamZ - this.camera.position.z) * 0.015;
+    this.camera.position.y = 22 + Math.sin(this.time * 0.5) * 0.5;
+    this.camera.lookAt(
+      this.ball.position.x * 0.1,
+      0,
+      this.ball.position.z * 0.1
+    );
 
     // Update stats
     if (this.onStatsUpdate) {
@@ -365,6 +655,7 @@ export class Simulation {
         distance: this.getDistance(),
         memorySize: this.agent.memory.length,
         step: this.currentStep,
+        catchCount: this.catchCount,
       });
     }
 
@@ -390,19 +681,27 @@ export class Simulation {
 
   reset() {
     this.agent = new DQNAgent(6, 8, [128, 64]);
-    this.ball.position.set(0, 0.5, 0);
+    this.ball.position.set(0, 0.6, 0);
     this.cube.position.set(
       (Math.random() - 0.5) * this.arenaSize * 1.5,
-      0.5,
+      0.6,
       (Math.random() - 0.5) * this.arenaSize * 1.5
     );
     this.currentStep = 0;
-    this.trailPoints = [];
+    this.catchCount = 0;
+    this.trailIndex = 0;
+    for (let i = 0; i < this.trailPositions.length / 3; i++) {
+      this.trailPositions[i * 3 + 1] = -10;
+    }
+    this.trail.geometry.attributes.position.needsUpdate = true;
   }
 
   dispose() {
     this.stop();
     this.renderer.dispose();
+    if (this.renderer.domElement.parentElement) {
+      this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
+    }
   }
 }
 
@@ -414,4 +713,5 @@ export interface SimStats {
   distance: number;
   memorySize: number;
   step: number;
+  catchCount: number;
 }
